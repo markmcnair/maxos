@@ -32,6 +32,43 @@ export async function runOnboard(): Promise<void> {
   const workContext = await rl.question("What kind of work do you do? > ");
   const tools = await rl.question("Daily tools/services? (e.g., Gmail, Calendar, Notion, GitHub) > ");
 
+  // Context import — the secret weapon for day-one usefulness
+  console.log("");
+  console.log("\u2501".repeat(60));
+  console.log("");
+  console.log("One more thing — and this is optional but powerful.");
+  console.log("");
+  console.log("If you have any existing context that would help your agent");
+  console.log("understand you from day one, you can paste it below. This could be:");
+  console.log("");
+  console.log("  - Your AI preferences from Claude/ChatGPT settings");
+  console.log("  - A journal entry or personal README");
+  console.log("  - Notes from Notion, Obsidian, Google Docs — anything");
+  console.log("  - How you like to work, what frustrates you, what energizes you");
+  console.log("  - Context about your projects, team, or goals");
+  console.log("");
+  console.log("The more your agent knows on day one, the less it has to learn");
+  console.log("the hard way. Paste as much as you want (even multiple pages),");
+  console.log("then type END on its own line when you're done.");
+  console.log("Or just press Enter to skip.");
+  console.log("");
+
+  let contextImport = "";
+  const firstLine = await rl.question("Paste context (or Enter to skip) > ");
+  if (firstLine.trim() && firstLine.trim().toUpperCase() !== "END") {
+    const contextLines = [firstLine];
+    console.log("(Keep pasting. Type END on its own line when done.)");
+    let line: string;
+    while (true) {
+      line = await rl.question("");
+      if (line.trim().toUpperCase() === "END") break;
+      contextLines.push(line);
+    }
+    contextImport = contextLines.join("\n").trim();
+    console.log(`\n Got it — ${contextImport.split("\n").length} lines of context captured.`);
+  }
+
+  console.log("");
   const connectTelegram = (await rl.question("Connect Telegram? (y/n) > ")).toLowerCase().startsWith("y");
   let telegramToken = "";
   let telegramUsers: string[] = [];
@@ -70,6 +107,7 @@ export async function runOnboard(): Promise<void> {
     dateFormat: "YYYY-MM-DD",
     hasQmd,
     customTasks: "",
+    contextImport: contextImport,
   };
 
   const dirs = [
@@ -111,6 +149,15 @@ export async function runOnboard(): Promise<void> {
 
   writeFileSync(join(MAXOS_HOME, "workspace", "MEMORY.md"), `# Memory\n\n(${ctx.agentName} will maintain this file)\n`);
   console.log("\u2705 Generated MEMORY.md");
+
+  // Write context import if provided
+  if (contextImport) {
+    writeFileSync(
+      join(MAXOS_HOME, "workspace", "CONTEXT_IMPORT.md"),
+      `# Context Import\n\nImported during onboarding. ${ctx.agentName} should read this to understand ${ctx.userName} from day one.\nOnce this information has been absorbed into MEMORY.md and daily practice, this file can be archived.\n\n---\n\n${contextImport}\n`
+    );
+    console.log("\u2705 Generated CONTEXT_IMPORT.md");
+  }
 
   const hookSrc = join(__dirname, "..", "hooks", "post-compact-inject.sh");
   const hookDst = join(MAXOS_HOME, "hooks", "post-compact-inject.sh");
