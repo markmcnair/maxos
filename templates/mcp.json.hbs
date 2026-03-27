@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    {{#if hasQmd}}
+    "qmd": {
+      "type": "stdio",
+      "command": "qmd",
+      "args": ["mcp"],
+      "env": {
+        "NODE_LLAMA_CPP_GPU": "false"
+      }
+    }
+    {{/if}}
+  }
+}

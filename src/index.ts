@@ -99,4 +99,12 @@ program
     }
   });
 
+program
+  .command("init")
+  .description("Interactive onboarding wizard")
+  .action(async () => {
+    const { runOnboard } = await import("../scripts/onboard.js");
+    await runOnboard();
+  });
+
 program.parse();

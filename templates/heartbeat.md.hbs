@@ -1,0 +1,11 @@
+# Heartbeat Tasks
+
+## Every 45 minutes
+- Write a brief checkpoint to today's daily journal (memory/YYYY-MM-DD.md). Include: what we've been working on, decisions made, current state. Keep under 200 words. Append only — do not overwrite existing entries.
+
+## 0 6 * * 1-5 (Weekday mornings at 6:00 AM)
+- Good morning {{userName}}! Check calendar for today's events and share a brief overview of the day ahead.
+
+{{#if customTasks}}
+{{customTasks}}
+{{/if}}

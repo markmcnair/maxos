@@ -1,0 +1,43 @@
+{
+  "identity": {
+    "name": "{{agentName}}",
+    "emoji": "{{emoji}}",
+    "timezone": "{{timezone}}"
+  },
+  "engine": {
+    "model": "sonnet",
+    "permissionMode": "bypassPermissions",
+    "allowedTools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "WebSearch", "WebFetch", "Agent", "mcp__*"],
+    "maxOneShotTimeout": 300000,
+    "watchdogTimeout": 300000
+  },
+  "channels": {
+    {{#if telegramToken}}
+    "telegram": {
+      "enabled": true,
+      "botToken": "${TELEGRAM_BOT_TOKEN}",
+      "allowedUsers": [{{#each telegramUsers}}"{{this}}"{{#unless @last}},{{/unless}}{{/each}}],
+      "dmPolicy": "allowlist",
+      "forumTopics": true
+    }
+    {{/if}}
+  },
+  "sessions": {
+    "routing": [{ "default": true, "session": "main" }],
+    "reset": { "daily": "04:00" },
+    "identityLinks": {}
+  },
+  "scheduler": {
+    "enabled": true,
+    "heartbeatFile": "workspace/HEARTBEAT.md",
+    "maxConcurrentTasks": 1,
+    "circuitBreakerThreshold": 3,
+    "protectedWindows": []
+  },
+  "reliability": {
+    "stateSnapshotInterval": 30000,
+    "crashJournalMaxEntries": 100,
+    "healthCheckPort": 18790,
+    "autoRestart": true
+  }
+}
