@@ -1,0 +1,16 @@
+[Unit]
+Description=MaxOS Agent Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=__NODE_PATH__ __MAXOS_ENTRY__ start --foreground
+WorkingDirectory=__WORKSPACE_PATH__
+Restart=always
+RestartSec=2
+Environment=MAXOS_HOME=__MAXOS_HOME__
+Environment=PATH=__PATH__
+EnvironmentFile=__MAXOS_HOME__/.env
+
+[Install]
+WantedBy=default.target

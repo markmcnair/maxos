@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.maxos.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NODE_PATH__</string>
+    <string>__MAXOS_ENTRY__</string>
+    <string>start</string>
+    <string>--foreground</string>
+  </array>
+  <key>KeepAlive</key>
+  <true/>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>WorkingDirectory</key>
+  <string>__WORKSPACE_PATH__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__PATH__</string>
+    <key>HOME</key>
+    <string>__HOME__</string>
+    <key>MAXOS_HOME</key>
+    <string>__MAXOS_HOME__</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>__MAXOS_HOME__/daemon.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>__MAXOS_HOME__/daemon.stderr.log</string>
+</dict>
+</plist>

@@ -107,4 +107,20 @@ program
     await runOnboard();
   });
 
+program
+  .command("install-service")
+  .description("Install MaxOS as a system service (launchd/systemd)")
+  .action(async () => {
+    const { installService } = await import("../scripts/service.js");
+    installService();
+  });
+
+program
+  .command("uninstall-service")
+  .description("Remove MaxOS system service")
+  .action(async () => {
+    const { uninstallService } = await import("../scripts/service.js");
+    uninstallService();
+  });
+
 program.parse();
