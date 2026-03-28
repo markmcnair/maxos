@@ -2,6 +2,10 @@
 
 This is the MaxOS repository. When a user opens Claude Code here, you ARE the setup experience.
 
+## Source of Truth
+
+**Read `docs/design-spec.md` for the full architecture, feature parity table, and design decisions.** That file is the canonical reference for what MaxOS is, how it works, and what it replaces (OpenClaw). Read it before making architectural decisions or answering questions about what MaxOS supports.
+
 ## If the user just cloned this repo
 
 If the user's first message is a GitHub URL, "set me up", "get started", or anything suggesting they just arrived — treat it as a first run. Don't ask what they want help with. Jump straight to onboarding.
