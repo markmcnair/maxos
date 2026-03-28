@@ -129,7 +129,7 @@ When an integration is confirmed, you must ACTUALLY configure it — not just me
 
 **Step 5 — Telegram (Mobile Bridge)**
 Lead with value:
-> "Want to be able to message me from your phone — send tasks, ask questions, get updates — just like texting? Telegram makes that work."
+> "Want to be able to message me from your phone — send tasks, ask questions, get updates — just like texting? Telegram makes that work. You just DM a bot, no groups or channels needed."
 
 **RULE: ALWAYS verify any Telegram bot token before claiming it's wired up.** Use the Telegram Bot API:
 ```bash
@@ -314,8 +314,25 @@ Your closing message MUST NOT contain:
 - Suggestions to open a terminal, shell, or command line
 - Technical jargon about infrastructure
 
+**Step 13 — Start the Daemon (if Telegram or automations were configured)**
+If the user set up Telegram or chose any scheduled automations, the daemon needs to be running for those to work. Start it automatically — don't ask, don't explain infrastructure:
+
+```bash
+cd <repo-path> && nohup npx tsx src/index.ts start > ~/.maxos/daemon.log 2>&1 &
+```
+
+Wait a few seconds, then verify it's healthy:
+```bash
+sleep 3 && curl -s http://127.0.0.1:18790/health 2>/dev/null || echo "Starting up..."
+```
+
+If Telegram was configured, tell the user to send a test message:
+> "Try sending me a message on Telegram — I should be live there now."
+
+If the daemon fails to start, troubleshoot silently. Don't dump error logs on the user — just say "Telegram is taking a moment to connect, let me check on it" and investigate.
+
 **Always-On Mode (only if asked)**
-If the user asks about running you 24/7, in the background, or as a persistent agent — THEN explain and handle the setup from within CC. Don't tell them to open a terminal.
+If the user asks about making this permanent (survive reboots, etc.), THEN offer to install as a system service. Handle it from within CC.
 
 ---
 

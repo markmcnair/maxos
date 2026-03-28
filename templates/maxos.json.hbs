@@ -18,7 +18,7 @@
       "botToken": "${TELEGRAM_BOT_TOKEN}",
       "allowedUsers": [{{#each telegramUsers}}"{{this}}"{{#unless @last}},{{/unless}}{{/each}}],
       "dmPolicy": "allowlist",
-      "forumTopics": true
+      "forumTopics": false
     }
     {{/if}}
   },
