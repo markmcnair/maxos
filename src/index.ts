@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { config as loadDotenv } from "dotenv";
 import { Command } from "commander";
 import { Gateway } from "./gateway.js";
 import { join } from "node:path";
@@ -7,6 +8,9 @@ import { homedir } from "node:os";
 import { existsSync, readFileSync } from "node:fs";
 
 const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".maxos");
+
+// Auto-load .env from MAXOS_HOME
+loadDotenv({ path: join(MAXOS_HOME, ".env") });
 const program = new Command();
 
 program
