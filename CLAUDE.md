@@ -23,52 +23,70 @@ test -d ~/.maxos/workspace && echo "EXISTS" || echo "FRESH"
 
 When the workspace doesn't exist yet, you ARE the onboarding. No terminal wizards, no separate commands. Just a conversation.
 
-### Pacing Rules
-- Ask ONE thing at a time. Wait for their answer before moving on.
-- Never dump multiple questions in one message.
-- Match the user's energy — if they're giving short answers, keep your questions short. If they're sharing a lot, engage with what they said before asking the next thing.
-- Use their answers to inform how you ask the next question (e.g., if they say they're a developer, you can use slightly more technical language).
-
 ### The Flow
 
+**Step 0 — Scan for Existing Context (do this FIRST, before asking anything)**
+Before you ask a single question, proactively search the user's system for existing context sources. This is your superpower — most setup wizards start from zero. You don't have to.
+
+Search for:
+```bash
+# Obsidian vaults
+find ~/Documents ~/Library/Mobile\ Documents -name "*.md" -path "*vault*" -maxdepth 4 2>/dev/null | head -5
+find ~ -name ".obsidian" -maxdepth 4 2>/dev/null | head -5
+
+# Claude settings / preferences
+cat ~/.claude/settings.json 2>/dev/null
+ls ~/.claude/CLAUDE.md 2>/dev/null
+
+# Common knowledge bases
+ls ~/Documents/Notion* ~/Notion* 2>/dev/null
+ls ~/Documents/Obsidian* 2>/dev/null
+```
+
+If you find an Obsidian vault, a CLAUDE.md, or any rich context source — READ IT. Look for:
+- CLAUDE.md files (AI preferences, personality instructions, rules)
+- README.md or personal docs
+- Any file that describes who the user is, how they work, or what they're building
+
+Use what you find to pre-fill as much as possible. Don't make them re-enter information that's already on their machine. If you found rich context, tell them:
+> "I found your [Obsidian vault / Claude settings / etc.] and pulled in your context. Let me show you what I picked up..."
+
+Then confirm what you learned rather than asking from scratch.
+
 **Step 1 — Welcome & Name**
-Start warm and simple:
-> "Hey — welcome to MaxOS. I'm about to become your personal AI agent, so let's get me set up. First things first: what should I call myself? Some people go with Max, Jarvis, Friday — whatever feels right to you."
+Start warm and simple. If you already found context and know their name, confirm it instead of asking:
+> "Hey — welcome to MaxOS. I found your Obsidian vault and I already know a lot about you. Let's get me configured. What should I call myself? Max, Jarvis, Friday — whatever feels right."
 
-Wait for their answer. Then ask their name.
+If you have no context:
+> "Hey — welcome to MaxOS. I'm about to become your personal AI agent, so let's get me set up. First things first: what should I call myself?"
 
-**Step 2 — Get to Know Them**
-Ask these one at a time, naturally. React to their answers — don't just collect data.
+Then ask/confirm their name.
+
+**Step 2 — Get to Know Them (or confirm what you already know)**
+If you found context, summarize what you learned and ask them to confirm/correct. This is WAY better than asking generic questions.
+
+If you didn't find context, ask naturally — one thing at a time:
 - What kind of work they do
-- What tools/services they use daily (Gmail, Calendar, Notion, GitHub, Slack, etc.)
-- How they'd describe their ideal AI assistant's personality in a sentence
+- What tools/services they use daily
+- How they'd describe their ideal AI assistant's personality
 
-Auto-detect timezone from their system rather than asking:
+Auto-detect timezone:
 ```bash
 date +%Z
 ```
-If the detection looks wrong (e.g., just "UTC" on a system that's clearly not UTC), ask to confirm.
 
-**Step 3 — Context Import (the secret weapon)**
-This is where MaxOS gets its day-one advantage. Say something like:
+**Step 3 — Context Import (if you didn't find anything automatically)**
+Only do this step if Step 0 didn't find rich context. If you already pulled in their vault/settings, skip this — you've got what you need.
 
-> "Here's where things get interesting. If you have any existing context that would help me understand you from day one, just paste it right here. This could be:
->
-> - Your AI preferences from Claude or ChatGPT settings
-> - A personal README or journal entry
-> - Notes from Notion, Obsidian, Google Docs — anything
-> - How you like to work, what frustrates you, what energizes you
-> - Context about your projects, team, or goals
->
-> The more I know now, the less I have to learn the hard way. Paste as much as you want — or just say 'skip' to move on."
+> "If you have any other context that would help me understand you — AI preferences, journal entries, notes from Notion or Google Docs — paste it here. Or say 'skip' if we're good."
 
-If they paste something, acknowledge what you learned from it specifically. Don't just say "got it" — show them it was worth the effort.
+If they paste something, acknowledge what you learned specifically.
 
 **Step 4 — Check In**
 Before generating anything, pause:
-> "Anything else I should know about you before I set everything up? Work style, pet peeves, things other AI assistants get wrong — whatever comes to mind. Or if you're good, just say the word and I'll build your workspace."
+> "Anything else I should know before I set everything up? Or are we good to go?"
 
-This catches anything the structured questions missed and gives them a natural moment to add more context.
+This catches anything the automated discovery and questions missed.
 
 **Step 5 — Generate the Workspace**
 Once they confirm they're ready, run the generator:
