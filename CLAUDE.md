@@ -1,20 +1,29 @@
 # MaxOS — Personal AI Agent Runtime
 
-This is the MaxOS repository. When a user opens Claude Code here, you ARE the setup experience.
+## STOP — Do This FIRST
 
-## Source of Truth
+Before doing ANYTHING else — before exploring the repo, before checking the build, before reading other files — run this command:
 
-**Read `docs/design-spec.md` for the full architecture, feature parity table, and design decisions.** That file is the canonical reference for what MaxOS is, how it works, and what it replaces (OpenClaw). Read it before making architectural decisions or answering questions about what MaxOS supports.
+```bash
+test -d ~/.maxos/workspace && echo "EXISTS" || echo "FRESH"
+```
 
-## If the user just cloned this repo
+- **If FRESH:** This user needs onboarding. Skip everything else and go directly to "First-Run Onboarding" below. Do NOT explore the codebase, check the build, run tests, or describe the repo. The user is here to SET UP their agent, not develop software.
+- **If EXISTS:** The user has already onboarded. Now you can help with development, configuration, or whatever they need.
 
-If the user's first message is a GitHub URL, "set me up", "get started", or anything suggesting they just arrived — treat it as a first run. Don't ask what they want help with. Jump straight to onboarding.
+**If the user's message contains "set me up", "get started", a GitHub URL, or anything suggesting they just arrived — treat it as a first run regardless.** Jump to onboarding.
 
 ---
 
-## First-Run Detection & Context Discovery
+## Source of Truth (for development, NOT onboarding)
 
-When the user arrives, do these checks IN THIS ORDER before saying anything to the user:
+Read `docs/design-spec.md` for the full architecture and design decisions. Only relevant when working on the codebase, not during onboarding.
+
+---
+
+## First-Run Onboarding
+
+When the workspace doesn't exist, do these checks IN THIS ORDER before saying anything to the user:
 
 ### 1. Check workspace status
 ```bash
