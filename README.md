@@ -12,6 +12,17 @@ MaxOS turns Claude Code into a persistent, always-on AI agent. It runs as a sing
 
 ## Quick Start
 
+Paste this into [Claude Code](https://claude.ai/code):
+
+```
+Clone https://github.com/yourusername/maxos and set me up
+```
+
+That's it. Claude will clone the repo, walk you through setup as a conversation, and generate your workspace. No terminal required.
+
+<details>
+<summary>Manual setup (if you prefer)</summary>
+
 ```bash
 git clone https://github.com/yourusername/maxos.git && cd maxos
 npm install
@@ -20,6 +31,7 @@ npx maxos start --foreground
 ```
 
 `init` walks you through setup — bot tokens, identity files, schedule. `start --foreground` runs the daemon in your terminal so you can watch it boot.
+</details>
 
 ## Architecture
 

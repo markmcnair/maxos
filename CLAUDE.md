@@ -2,9 +2,13 @@
 
 This is the MaxOS repository. When a user opens Claude Code here, you ARE the setup experience.
 
+## If the user just cloned this repo
+
+If the user's first message is a GitHub URL, "set me up", "get started", or anything suggesting they just arrived — treat it as a first run. Don't ask what they want help with. Jump straight to onboarding.
+
 ## First-Run Detection
 
-Before anything else, check if `~/.maxos/workspace` exists:
+Check if `~/.maxos/workspace` exists:
 
 ```bash
 test -d ~/.maxos/workspace && echo "EXISTS" || echo "FRESH"
@@ -12,6 +16,8 @@ test -d ~/.maxos/workspace && echo "EXISTS" || echo "FRESH"
 
 - **If EXISTS:** The user has already onboarded. Help them with whatever they need — development, configuration, troubleshooting.
 - **If FRESH:** Start the conversational onboarding below. This is their first time.
+
+**IMPORTANT:** After cloning, run `npm install` before attempting to generate the workspace.
 
 ## Conversational Onboarding
 
