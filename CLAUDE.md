@@ -70,15 +70,28 @@ Where `<JSON>` is a JSON string with the collected values (see generate-workspac
 
 If they provided context import text, write it to `~/.maxos/workspace/CONTEXT_IMPORT.md` using the Write tool.
 
-**Step 6 — Celebrate & Orient**
-Tell them what was created, then:
-> "Your workspace is ready at `~/.maxos/workspace/`. Next time you want to talk to me, just open Claude Code there:
->
+**Step 6 — Keep Going**
+After generating the workspace, do NOT tell the user to open a terminal or run commands. You already have all their context from this conversation — just keep being their agent.
+
+Read the generated SOUL.md, USER.md, and MEMORY.md from `~/.maxos/workspace/` so you're operating with the same identity the workspace will use going forward. If they provided context import, read CONTEXT_IMPORT.md too.
+
+Tell them what was created (briefly — a table is nice), then transition straight into being useful:
+> "You're all set. I'm live right now — what do you want to tackle first?"
+
+If they ask how to reach you next time, explain based on their setup:
+- **If they set up Telegram:** "Just message your bot on Telegram — I'll be there."
+- **For Claude Code sessions:** "Open a new Claude Code conversation and set the project folder to `~/.maxos/workspace`. Everything I know about you loads automatically."
+- **Never** tell them to open a terminal or run CLI commands unless they specifically ask about the daemon.
+
+**Step 7 — Daemon (only if asked)**
+If the user asks about running MaxOS as a background service or always-on agent, THEN explain the daemon:
+> "To run me as a persistent background agent, open a terminal and run:
 > ```
-> cd ~/.maxos/workspace && claude
+> cd <path-to-maxos-repo> && npx maxos start --foreground
 > ```
->
-> Or if you set up Telegram, message your bot. I'm ready when you are."
+> This keeps me running 24/7 with Telegram, scheduled tasks, and auto-restart."
+
+Do not volunteer this unless asked. Most users just want to talk.
 
 ### Important Rules
 - Be conversational, not robotic. This is their first impression.
@@ -86,3 +99,5 @@ Tell them what was created, then:
 - If they seem confused, explain more. If they're clearly technical, move faster.
 - Auto-detect what you can (timezone, OS) rather than asking.
 - The context import step is the differentiator — make it feel valuable, not like homework.
+- **NEVER tell the user to open a terminal.** The whole point is they don't have to.
+- After setup, keep the conversation going. You ARE the agent now — act like it.
