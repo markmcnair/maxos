@@ -129,21 +129,37 @@ When an integration is confirmed, you must ACTUALLY configure it — not just me
 
 **Step 5 — Telegram (Mobile Bridge)**
 Lead with value:
-> "Want to be able to message me from your phone — send tasks, ask questions, get updates — just like texting? Telegram makes that work. Takes about 2 minutes."
+> "Want to be able to message me from your phone — send tasks, ask questions, get updates — just like texting? Telegram makes that work."
 
-If credentials were found in context scan, confirm — don't auto-wire silently:
-> "I found a Telegram bot already configured on this machine: [bot name/token prefix]. Want to use that one, or set up a fresh bot?"
+**RULE: ALWAYS verify any Telegram bot token before claiming it's wired up.** Use the Telegram Bot API:
+```bash
+curl -s "https://api.telegram.org/bot<TOKEN>/getMe"
+```
+This returns the bot's actual username and display name. Never trust a token at face value.
 
-If they want to use it: wire it in.
-If they want a new one, OR if no credentials found and they said yes: guide step by step:
-1. "Open Telegram on your phone and search for **@BotFather**"
-2. "Send `/newbot` — it'll ask you for a name and a username. Pick whatever you want."
-3. "It'll give you a token (long string of numbers and letters). Paste it here."
-4. "Now search for **@userinfobot**, send it `/start`, and paste the number it gives you. That's your user ID — it tells the bot to only talk to you."
-5. Save token and user ID for the generator.
+**If a token was found in the context scan:**
+1. Verify it with getMe immediately
+2. Tell the user what bot it belongs to: "I found a bot token on this machine — it's for **@ActualBotUsername**. Want to use that one, or a different bot?"
+3. If they confirm: wire it in
+4. If they want a different bot: ask them to paste the new token (they can get it from @BotFather → /mybots → select their bot → API Token). Verify that one too.
+
+**If the user mentions a bot by handle** (like "@MyBot") and it doesn't match the verified token:
+- Tell them: "The token I found is for @DifferentBot, not @MyBot. Want me to use @DifferentBot, or do you have the token for @MyBot? You can get it from @BotFather → /mybots → tap @MyBot → API Token."
+
+**If no token found and they want Telegram:**
+1. "Open Telegram and search for **@BotFather**"
+2. "Send `/newbot` — pick any name and username"
+3. "It'll give you a token. Paste it here."
+4. Verify the token with getMe, confirm the bot name back to them
+5. "Now search for **@userinfobot**, send `/start`, and paste the number it gives you. That's your user ID — makes sure the bot only talks to you."
+6. Save both for the generator.
+
+**User ID:** If found in context scan, confirm: "I also found your Telegram user ID: XXXXXXXX. Same one?" If not found, guide them to @userinfobot.
+
+**NEVER say "locked in" or "connected" without a successful getMe call.** Tokens can be expired, revoked, or for a completely different bot.
 
 If they skip:
-> "No problem. You can always add Telegram later — just tell me 'set up Telegram' in any conversation."
+> "No problem — you can add Telegram anytime."
 
 **Step 6 — Email**
 Lead with value:
