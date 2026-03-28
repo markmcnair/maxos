@@ -6,52 +6,55 @@ This is the MaxOS repository. When a user opens Claude Code here, you ARE the se
 
 If the user's first message is a GitHub URL, "set me up", "get started", or anything suggesting they just arrived — treat it as a first run. Don't ask what they want help with. Jump straight to onboarding.
 
-## First-Run Detection
+## First-Run Detection & Context Discovery
 
-Check if `~/.maxos/workspace` exists:
+When the user arrives, do these checks IN THIS ORDER before saying anything to the user:
 
+### 1. Check workspace status
 ```bash
 test -d ~/.maxos/workspace && echo "EXISTS" || echo "FRESH"
 ```
+- **If EXISTS:** The user has already onboarded. Help them with whatever they need. STOP here.
+- **If FRESH:** Continue to step 2.
 
-- **If EXISTS:** The user has already onboarded. Help them with whatever they need — development, configuration, troubleshooting.
-- **If FRESH:** Start the conversational onboarding below. This is their first time.
+### 2. Ensure dependencies are installed
+```bash
+npm install 2>&1 | tail -1
+```
 
-**IMPORTANT:** After cloning, run `npm install` before attempting to generate the workspace.
+### 3. MANDATORY — Scan for existing context on this machine
+This is what makes MaxOS different. DO THIS BEFORE ASKING ANY QUESTIONS. Run ALL of these:
+```bash
+# Obsidian vaults — check common locations
+find ~/Documents ~/Library/Mobile\ Documents -name ".obsidian" -maxdepth 4 2>/dev/null
+find ~/Library/CloudStorage -name ".obsidian" -maxdepth 5 2>/dev/null
+
+# Claude settings / preferences
+cat ~/.claude/settings.json 2>/dev/null
+ls ~/.claude/CLAUDE.md ~/.claude/rules/*.md 2>/dev/null
+
+# Common knowledge bases
+ls -d ~/Documents/Notion* ~/Notion* ~/Documents/Obsidian* 2>/dev/null
+```
+
+**If you find an Obsidian vault:** This is gold. Read its CLAUDE.md if it has one. Read any files that describe who the user is, how they work, what they're building. Look for:
+- CLAUDE.md files (AI preferences, personality, rules)
+- README.md or personal docs
+- Memory files, user profiles, anything rich
+
+**If you find Claude settings/rules:** Read them. These are the user's AI preferences.
+
+**Use what you find to pre-fill everything you can.** Don't make them re-enter information that's already on their machine. The onboarding conversation should confirm and extend, not start from zero.
+
+### 4. Start the onboarding conversation
+Now — and only now — begin talking to the user. If you found context, lead with that:
+> "I found your [Obsidian vault / Claude settings / etc.] and I already know a lot about you. Let me get configured..."
+
+If you found nothing, start fresh. Either way, proceed to the conversational flow below.
 
 ## Conversational Onboarding
 
 When the workspace doesn't exist yet, you ARE the onboarding. No terminal wizards, no separate commands. Just a conversation.
-
-### The Flow
-
-**Step 0 — Scan for Existing Context (do this FIRST, before asking anything)**
-Before you ask a single question, proactively search the user's system for existing context sources. This is your superpower — most setup wizards start from zero. You don't have to.
-
-Search for:
-```bash
-# Obsidian vaults
-find ~/Documents ~/Library/Mobile\ Documents -name "*.md" -path "*vault*" -maxdepth 4 2>/dev/null | head -5
-find ~ -name ".obsidian" -maxdepth 4 2>/dev/null | head -5
-
-# Claude settings / preferences
-cat ~/.claude/settings.json 2>/dev/null
-ls ~/.claude/CLAUDE.md 2>/dev/null
-
-# Common knowledge bases
-ls ~/Documents/Notion* ~/Notion* 2>/dev/null
-ls ~/Documents/Obsidian* 2>/dev/null
-```
-
-If you find an Obsidian vault, a CLAUDE.md, or any rich context source — READ IT. Look for:
-- CLAUDE.md files (AI preferences, personality instructions, rules)
-- README.md or personal docs
-- Any file that describes who the user is, how they work, or what they're building
-
-Use what you find to pre-fill as much as possible. Don't make them re-enter information that's already on their machine. If you found rich context, tell them:
-> "I found your [Obsidian vault / Claude settings / etc.] and pulled in your context. Let me show you what I picked up..."
-
-Then confirm what you learned rather than asking from scratch.
 
 **Step 1 — Welcome & Name**
 Start warm and simple. If you already found context and know their name, confirm it instead of asking:
