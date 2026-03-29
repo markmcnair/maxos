@@ -16,6 +16,7 @@ export interface ProtectedWindow {
 }
 
 type TaskRunner = (prompt: string, taskName: string) => Promise<string>;
+type ResultDeliverer = (result: string, taskName: string) => Promise<void>;
 type AlertSender = (message: string) => Promise<void>;
 
 export function parseHeartbeat(markdown: string): HeartbeatTask[] {
@@ -129,6 +130,7 @@ export class Scheduler {
     private readonly circuitBreakerThreshold: number,
     private readonly protectedWindows: ProtectedWindow[],
     private readonly runner: TaskRunner,
+    private readonly deliverer: ResultDeliverer,
     private readonly alerter: AlertSender,
   ) {}
 
@@ -199,9 +201,16 @@ export class Scheduler {
 
     this.runningCount++;
     try {
-      await this.runner(task.prompt, task.name);
+      const result = await this.runner(task.prompt, task.name);
       this.failures.set(task.name, 0);
       this.lastRun.set(task.name, Date.now());
+
+      // Deliver the result to the user via connected channels
+      if (result.trim()) {
+        await this.deliverer(result, task.name).catch((err) => {
+          logger.error("scheduler:deliver_failed", { task: task.name, error: err instanceof Error ? err.message : String(err) });
+        });
+      }
     } catch (err) {
       const count = (this.failures.get(task.name) ?? 0) + 1;
       this.failures.set(task.name, count);

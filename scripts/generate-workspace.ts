@@ -94,6 +94,7 @@ async function main() {
     { template: "soul.md.hbs", output: join(MAXOS_HOME, "workspace", "SOUL.md") },
     { template: "user.md.hbs", output: join(MAXOS_HOME, "workspace", "USER.md") },
     { template: "heartbeat.md.hbs", output: join(MAXOS_HOME, "workspace", "HEARTBEAT.md") },
+    { template: "claude.md.hbs", output: join(MAXOS_HOME, "workspace", "CLAUDE.md") },
     { template: "claude.md.hbs", output: join(MAXOS_HOME, "workspace", ".claude", "CLAUDE.md") },
     { template: "settings.json.hbs", output: join(MAXOS_HOME, "workspace", ".claude", "settings.json") },
     { template: "maxos.json.hbs", output: join(MAXOS_HOME, "maxos.json") },

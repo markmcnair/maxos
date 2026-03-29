@@ -39,6 +39,7 @@ export class Gateway {
       this.config.scheduler.circuitBreakerThreshold,
       this.config.scheduler.protectedWindows,
       (prompt, taskName) => this.runOneShot(prompt, taskName),
+      (result, taskName) => this.deliverTaskResult(result, taskName),
       (msg) => this.alertUser(msg),
     );
   }
@@ -109,16 +110,36 @@ export class Gateway {
     logger.info("gateway:health_server", { port: this.config.reliability.healthCheckPort });
   }
 
+  private static readonly ACK_PHRASES = [
+    "On it.",
+    "Working on that now.",
+    "Give me a sec.",
+    "Pulling that together.",
+    "Let me check.",
+    "One moment.",
+    "Looking into it.",
+    "Got it — working.",
+  ];
+
+  private ackIndex = 0;
+
+  private nextAck(): string {
+    const phrase = Gateway.ACK_PHRASES[this.ackIndex % Gateway.ACK_PHRASES.length];
+    this.ackIndex++;
+    return phrase;
+  }
+
   private async handleMessage(msg: InboundMessage): Promise<void> {
     if (this.shuttingDown) return;
 
-    // Immediately show typing indicator so user knows we're processing
     const channel = this.channels.find((c) => c.name === msg.channelName);
-    if (channel?.sendTyping) {
-      await channel.sendTyping(msg.conversationId).catch(() => {});
+
+    // Send an immediate acknowledgment message so user knows we're alive
+    if (channel) {
+      await channel.send(msg.conversationId, { text: this.nextAck(), format: "text" }).catch(() => {});
     }
 
-    // Keep typing indicator alive (Telegram expires it after ~5s)
+    // Keep typing indicator alive while processing
     const typingInterval = channel?.sendTyping
       ? setInterval(() => { channel.sendTyping!(msg.conversationId).catch(() => {}); }, 4000)
       : null;
@@ -206,6 +227,21 @@ export class Gateway {
       permissionMode: this.config.engine.permissionMode,
       allowedTools: this.config.engine.allowedTools,
     });
+  }
+
+  private async deliverTaskResult(result: string, taskName: string): Promise<void> {
+    logger.info("gateway:deliver_task", { task: taskName, length: result.length });
+    // Send scheduled task results to the primary user on the first healthy channel
+    for (const channel of this.channels) {
+      if (channel.isHealthy()) {
+        const userId = this.config.channels.telegram?.allowedUsers[0];
+        if (userId) {
+          await channel.send(`dm:${userId}`, { text: result, format: "html" });
+          return;
+        }
+      }
+    }
+    logger.warn("gateway:deliver_task:no_channel", { task: taskName });
   }
 
   private async alertUser(message: string): Promise<void> {
