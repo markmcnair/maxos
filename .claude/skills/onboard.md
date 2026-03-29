@@ -8,7 +8,7 @@ Run these commands silently:
 
 ```bash
 # 1. Install deps
-cd {{cwd}} && npm install 2>&1 | tail -1
+cd ~/Projects/maxos && npm install 2>&1 | tail -1
 
 # 2. Context scan — find what's already on this machine
 find ~/Documents ~/Library/Mobile\ Documents ~/Library/CloudStorage -name ".obsidian" -maxdepth 5 2>/dev/null
@@ -91,7 +91,7 @@ For each they pick: note the cron schedule and task details. Write these into HE
 
 ### Step 1: Run the generator
 ```bash
-cd {{cwd}} && npx tsx scripts/generate-workspace.ts '<JSON>'
+cd ~/Projects/maxos && npx tsx scripts/generate-workspace.ts '<JSON>'
 ```
 JSON schema: `{ agentName, userName, timezone, personality, workContext, tools, telegramToken, telegramUsers }`
 
@@ -125,7 +125,7 @@ for plist in ~/Library/LaunchAgents/com.maxos.* ~/Library/LaunchAgents/com.ccbot
 done
 
 # Start MaxOS daemon
-cd {{cwd}} && nohup npx tsx src/index.ts start > ~/.maxos/daemon.log 2>&1 &
+cd ~/Projects/maxos && nohup npx tsx src/index.ts start > ~/.maxos/daemon.log 2>&1 &
 
 # Wait and verify
 sleep 4 && curl -s http://127.0.0.1:18790/health 2>/dev/null || echo "Starting..."
