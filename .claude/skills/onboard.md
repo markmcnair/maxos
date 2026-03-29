@@ -106,33 +106,51 @@ After the generator, you MUST actually write these files:
 - **~/.maxos/workspace/tasks/** — task definition files for chosen automations
 - **~/.maxos/workspace/HEARTBEAT.md** — update with cron entries for chosen automations
 
-### Step 3: Ensure token exclusivity, kill old bridges, start MaxOS
+### Step 3: Claim Telegram token, kill old bridges, start MaxOS
 
-**IMPORTANT:** If this Claude Code session has the Telegram plugin active (plugin:telegram:telegram), it is ALSO polling the bot token. The daemon will 409-conflict with it. You CANNOT kill the plugin from here — instead, warn the user:
-> "I need to start your Telegram connection fresh. Close any other Claude Code sessions that use @BotName, then tell me when ready."
+MaxOS daemon is the SOLE owner of the Telegram bot token. Before starting it, you MUST eliminate every other poller:
 
-Wait for confirmation before proceeding. If no Telegram plugin is active in this session, proceed directly.
 ```bash
-# Kill ALL competing Telegram pollers (CCBot, old tmux sessions, etc.)
+# 1. Disable Claude Code's Telegram plugin (prevents future sessions from auto-polling)
+python3 -c "
+import json, os
+p = os.path.expanduser('~/.claude/settings.json')
+with open(p) as f: d = json.load(f)
+# Disable telegram plugin
+d.setdefault('enabledPlugins', {})['telegram@claude-plugins-official'] = False
+# Remove ccbot SessionStart hook (MaxOS replaces it)
+hooks = d.get('hooks', {}).get('SessionStart', [])
+d['hooks']['SessionStart'] = [h for h in hooks if not any('ccbot' in hk.get('command','') for hk in h.get('hooks',[]))]
+with open(p, 'w') as f: json.dump(d, f, indent=2)
+print('Telegram plugin disabled, CCBot hook removed')
+"
+
+# 2. Kill ALL competing Telegram pollers
 pkill -f ccbot 2>/dev/null
 tmux kill-session -t ccbot 2>/dev/null
 tmux kill-session -t ccbot-2 2>/dev/null
 tmux kill-session -t claude-channels 2>/dev/null
 
-# Disable old launchd scheduled tasks that conflict with MaxOS scheduler
+# 3. Kill any bun/node processes polling this bot token (Claude plugin workers)
+pkill -f "plugin.*telegram" 2>/dev/null
+
+# 4. Disable old launchd scheduled tasks
 for plist in ~/Library/LaunchAgents/com.maxos.* ~/Library/LaunchAgents/com.ccbot.*; do
   [ -f "$plist" ] && launchctl unload "$plist" 2>/dev/null
 done
 
-# Start MaxOS daemon
+# 5. Wait a beat for Telegram API to release the polling lock
+sleep 2
+
+# 6. Start MaxOS daemon
 cd ~/Projects/maxos && nohup npx tsx src/index.ts start > ~/.maxos/daemon.log 2>&1 &
 
-# Wait and verify
-sleep 4 && curl -s http://127.0.0.1:18790/health 2>/dev/null || echo "Starting..."
+# 7. Wait and verify health
+sleep 5 && curl -s http://127.0.0.1:18790/health 2>/dev/null || echo "Starting..."
 ```
 
-If Telegram was configured: "Try sending me a message on Telegram — I should be live."
-If daemon fails: troubleshoot silently, don't dump errors on user.
+If health check shows Telegram healthy: "Try sending me a message on Telegram — I should be live."
+If daemon fails: check `~/.maxos/daemon.log`, troubleshoot silently, don't dump errors on user.
 
 ### Step 4: Show summary and go
 Show a table of what's connected and what's automated. Then:
