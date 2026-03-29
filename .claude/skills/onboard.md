@@ -87,6 +87,15 @@ Listen to their answer, then suggest specific automations tailored to what they 
 
 For each they pick: note the cron schedule and task details. Write these into HEARTBEAT.md — MaxOS's built-in scheduler handles the rest. No launchd, no tmux keystrokes, no external cron.
 
+**CRITICAL: HEARTBEAT.md cron format.** Headings MUST be exactly 5-field cron: `minute hour day month dayofweek`. Examples:
+- `## 0 6 * * 0-5` = 6:00 AM daily except Saturday
+- `## 55 15 * * 0-5` = 3:55 PM daily except Saturday
+- `## 35 16 * * 1-5` = 4:35 PM weekdays
+- `## Every 45 minutes` = natural language (also supported)
+
+**WRONG:** `## 0 15 55 * * 0-5` (6 fields — parser will reject this)
+**RIGHT:** `## 55 15 * * 0-5` (5 fields — minute first, then hour)
+
 ## Phase 4 — Generate & Wire
 
 ### Step 1: Run the generator
@@ -142,8 +151,9 @@ done
 # 5. Wait a beat for Telegram API to release the polling lock
 sleep 2
 
-# 6. Start MaxOS daemon
-cd ~/Projects/maxos && nohup npx tsx src/index.ts start > ~/.maxos/daemon.log 2>&1 &
+# 6. Build MaxOS and install as a persistent service (auto-restarts, survives reboots)
+cd ~/Projects/maxos && npx tsc 2>&1 | tail -3
+cd ~/Projects/maxos && node dist/index.js install-service 2>&1
 
 # 7. Wait and verify health
 sleep 5 && curl -s http://127.0.0.1:18790/health 2>/dev/null || echo "Starting..."
