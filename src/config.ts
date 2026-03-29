@@ -13,6 +13,7 @@ export interface MaxOSConfig {
     allowedTools: string[];
     maxOneShotTimeout: number;
     watchdogTimeout: number;
+    responseTimeout: number;
   };
   channels: {
     telegram?: {
@@ -60,6 +61,7 @@ export const DEFAULT_CONFIG: MaxOSConfig = {
     allowedTools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "WebSearch", "WebFetch", "Agent", "mcp__*"],
     maxOneShotTimeout: 300_000,
     watchdogTimeout: 300_000,
+    responseTimeout: 300_000,
   },
   channels: {},
   sessions: {

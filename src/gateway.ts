@@ -112,6 +112,17 @@ export class Gateway {
   private async handleMessage(msg: InboundMessage): Promise<void> {
     if (this.shuttingDown) return;
 
+    // Immediately show typing indicator so user knows we're processing
+    const channel = this.channels.find((c) => c.name === msg.channelName);
+    if (channel?.sendTyping) {
+      await channel.sendTyping(msg.conversationId).catch(() => {});
+    }
+
+    // Keep typing indicator alive (Telegram expires it after ~5s)
+    const typingInterval = channel?.sendTyping
+      ? setInterval(() => { channel.sendTyping!(msg.conversationId).catch(() => {}); }, 4000)
+      : null;
+
     const sessionName = this.sessions.route(msg);
     logger.info("gateway:message", { from: msg.senderId, session: sessionName });
 
@@ -122,31 +133,34 @@ export class Gateway {
       this.interactiveSessions.set(sessionName, session);
     }
 
-    let responseBuffer = "";
+    const responseTimeout = this.config.engine.responseTimeout ?? 300_000;
     const responsePromise = new Promise<string>((resolve) => {
       const timeout = setTimeout(() => {
-        resolve(responseBuffer || "(No response — session may be processing)");
-      }, 120_000);
+        resolve("(Still processing — took too long)");
+      }, responseTimeout);
 
       const onData = (data: string) => {
-        responseBuffer += data;
-        if (this.looksLikePromptReady(responseBuffer)) {
-          clearTimeout(timeout);
-          session!.removeListener("data", onData);
-          resolve(this.extractResponse(responseBuffer));
-        }
+        clearTimeout(timeout);
+        session!.removeListener("data", onData);
+        session!.removeListener("done", onDone);
+        resolve(data);
       };
-      session!.on("data", onData);
+      const onDone = () => {
+        clearTimeout(timeout);
+        session!.removeListener("data", onData);
+        session!.removeListener("done", onDone);
+      };
+      session!.once("data", onData);
+      session!.once("done", onDone);
     });
 
     session.send(msg.text);
     const response = await responsePromise;
 
-    if (response.trim()) {
-      const channel = this.channels.find((c) => c.name === msg.channelName);
-      if (channel) {
-        await channel.send(msg.conversationId, { text: response, format: "html" });
-      }
+    if (typingInterval) clearInterval(typingInterval);
+
+    if (response.trim() && channel) {
+      await channel.send(msg.conversationId, { text: response, format: "html" });
     }
 
     this.sessions.recordActivity(sessionName);
@@ -211,21 +225,6 @@ export class Gateway {
         }
       }
     }
-  }
-
-  private looksLikePromptReady(buffer: string): boolean {
-    const lines = buffer.split("\n");
-    const lastLine = lines[lines.length - 1]?.trim() ?? "";
-    return lastLine.endsWith("\u276F") || lastLine.endsWith(">") || lastLine.endsWith("$");
-  }
-
-  private extractResponse(buffer: string): string {
-    const clean = buffer.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").trim();
-    const lines = clean.split("\n");
-    while (lines.length > 0 && (lines[lines.length - 1].trim().endsWith("\u276F") || lines[lines.length - 1].trim() === "")) {
-      lines.pop();
-    }
-    return lines.join("\n").trim();
   }
 
   private saveState(): void {

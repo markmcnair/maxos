@@ -75,15 +75,17 @@ Based on what they mentioned — Notion, GitHub, Slack, Google Drive. Top 2-3 on
 
 ## Phase 3 — Automations (show them what's possible)
 
-> "Now the fun part — I can work for you on autopilot. Things like:
+Start with a genuine question based on what you've learned about them:
+> "Based on what you've told me, what eats your time every day? What's the stuff you wish you didn't have to think about?"
+
+Listen to their answer, then suggest specific automations tailored to what they said. If they're not sure, offer examples:
 > - **Morning brief** — calendar + email overview every morning
 > - **Email triage** — sort, draft, clean every afternoon
 > - **End-of-day debrief** — summarize the day, flag what's open
 > - **Calendar management** — catch conflicts, protect focus time
->
-> Which of these sound useful? Or is there something you do every day that feels like a grind?"
+> - **Research digests** — daily briefing on topics they follow
 
-For each they pick: note the cron schedule and task details.
+For each they pick: note the cron schedule and task details. Write these into HEARTBEAT.md — MaxOS's built-in scheduler handles the rest. No launchd, no tmux keystrokes, no external cron.
 
 ## Phase 4 — Generate & Wire
 
@@ -104,10 +106,23 @@ After the generator, you MUST actually write these files:
 - **~/.maxos/workspace/tasks/** — task definition files for chosen automations
 - **~/.maxos/workspace/HEARTBEAT.md** — update with cron entries for chosen automations
 
-### Step 3: Kill old bridges, start MaxOS
+### Step 3: Ensure token exclusivity, kill old bridges, start MaxOS
+
+**IMPORTANT:** If this Claude Code session has the Telegram plugin active (plugin:telegram:telegram), it is ALSO polling the bot token. The daemon will 409-conflict with it. You CANNOT kill the plugin from here — instead, warn the user:
+> "I need to start your Telegram connection fresh. Close any other Claude Code sessions that use @BotName, then tell me when ready."
+
+Wait for confirmation before proceeding. If no Telegram plugin is active in this session, proceed directly.
 ```bash
-# Kill CCBot if running (it conflicts with MaxOS Telegram)
-pkill -f ccbot 2>/dev/null; tmux kill-session -t ccbot 2>/dev/null
+# Kill ALL competing Telegram pollers (CCBot, old tmux sessions, etc.)
+pkill -f ccbot 2>/dev/null
+tmux kill-session -t ccbot 2>/dev/null
+tmux kill-session -t ccbot-2 2>/dev/null
+tmux kill-session -t claude-channels 2>/dev/null
+
+# Disable old launchd scheduled tasks that conflict with MaxOS scheduler
+for plist in ~/Library/LaunchAgents/com.maxos.* ~/Library/LaunchAgents/com.ccbot.*; do
+  [ -f "$plist" ] && launchctl unload "$plist" 2>/dev/null
+done
 
 # Start MaxOS daemon
 cd {{cwd}} && nohup npx tsx src/index.ts start > ~/.maxos/daemon.log 2>&1 &

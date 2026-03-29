@@ -1,4 +1,5 @@
 import { Bot, Context } from "grammy";
+import { execSync } from "node:child_process";
 import { smartChunk } from "../utils/chunker.js";
 import { logger } from "../utils/logger.js";
 import type {
@@ -25,6 +26,10 @@ export class TelegramAdapter implements ChannelAdapter {
 
   async connect(config: ChannelConfig): Promise<void> {
     this.config = config as TelegramConfig;
+
+    // Kill any competing bot processes (CCBot, old tmux sessions) before we start polling
+    this.killCompetingBots();
+
     this.bot = new Bot(this.config.botToken);
 
     this.bot.on("message:text", (ctx: Context) => {
@@ -66,11 +71,39 @@ export class TelegramAdapter implements ChannelAdapter {
       logger.error("telegram:error", { error: err.message });
     });
 
-    await this.bot.start({
+    // bot.start() is a long-running polling loop — don't await it
+    // or it blocks the rest of gateway startup (health server, scheduler)
+    this.startWithRetry();
+  }
+
+  private startWithRetry(attempt = 0): void {
+    if (!this.bot) return;
+
+    // Drop any pending updates from other pollers before we claim the token
+    this.bot.api.deleteWebhook({ drop_pending_updates: true }).catch(() => {});
+
+    this.bot.start({
       onStart: () => {
         this.healthy = true;
-        logger.info("telegram:connected");
+        if (attempt > 0) {
+          logger.info("telegram:reconnected", { attempt });
+        } else {
+          logger.info("telegram:connected");
+        }
       },
+    }).catch((err: Error) => {
+      this.healthy = false;
+      const is409 = err.message?.includes("409") || err.message?.includes("Conflict");
+
+      if (is409 && attempt < 5) {
+        const delay = Math.min(2000 * 2 ** attempt, 30_000);
+        logger.warn("telegram:409_conflict_retry", { attempt: attempt + 1, delayMs: delay });
+        // Kill again — the competing process may have respawned
+        this.killCompetingBots();
+        setTimeout(() => this.startWithRetry(attempt + 1), delay);
+      } else {
+        logger.error("telegram:start_failed", { error: err.message, attempt });
+      }
     });
   }
 
@@ -88,6 +121,16 @@ export class TelegramAdapter implements ChannelAdapter {
 
   onMessage(handler: (msg: InboundMessage) => void): void {
     this.handler = handler;
+  }
+
+  async sendTyping(conversationId: string): Promise<void> {
+    if (!this.bot) return;
+    const [_type, id] = conversationId.split(":");
+    try {
+      await this.bot.api.sendChatAction(id, "typing");
+    } catch {
+      // Non-critical — don't break the flow
+    }
   }
 
   async send(
@@ -112,6 +155,23 @@ export class TelegramAdapter implements ChannelAdapter {
           error: err instanceof Error ? err.message : String(err),
         });
         throw err;
+      }
+    }
+  }
+
+  private killCompetingBots(): void {
+    const targets = [
+      "pkill -f ccbot",
+      "tmux kill-session -t ccbot 2>/dev/null",
+      "tmux kill-session -t ccbot-2 2>/dev/null",
+      "tmux kill-session -t claude-channels 2>/dev/null",
+    ];
+    for (const cmd of targets) {
+      try {
+        execSync(cmd, { stdio: "ignore" });
+        logger.info("telegram:killed_competing", { cmd });
+      } catch {
+        // Process not found — good
       }
     }
   }

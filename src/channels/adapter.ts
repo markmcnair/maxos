@@ -35,5 +35,6 @@ export interface ChannelAdapter {
   isHealthy(): boolean;
   onMessage(handler: (msg: InboundMessage) => void): void;
   send(conversationId: string, content: OutboundMessage): Promise<void>;
+  sendTyping?(conversationId: string): Promise<void>;
   capabilities(): ChannelCapabilities;
 }
