@@ -153,7 +153,7 @@ sleep 2
 
 # 6. Build MaxOS and install as a persistent service (auto-restarts, survives reboots)
 cd ~/Projects/maxos && npx tsc 2>&1 | tail -3
-cd ~/Projects/maxos && node dist/index.js install-service 2>&1
+cd ~/Projects/maxos && node dist/src/index.js install-service 2>&1
 
 # 7. Wait and verify health
 sleep 5 && curl -s http://127.0.0.1:18790/health 2>/dev/null || echo "Starting..."

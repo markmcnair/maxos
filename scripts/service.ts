@@ -7,6 +7,11 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".maxos");
 
+// Detect project root — works from both scripts/ (tsx) and dist/scripts/ (compiled)
+const PROJECT_ROOT = existsSync(join(__dirname, "..", "package.json"))
+  ? join(__dirname, "..")           // Running from scripts/ (tsx dev mode)
+  : join(__dirname, "..", "..");    // Running from dist/scripts/ (compiled)
+
 export function installService(): void {
   const os = platform();
 
@@ -27,11 +32,11 @@ export function uninstallService(): void {
 }
 
 function installLaunchd(): void {
-  const templatePath = join(__dirname, "..", "services", "com.maxos.daemon.plist");
+  const templatePath = join(PROJECT_ROOT, "services", "com.maxos.daemon.plist");
   let plist = readFileSync(templatePath, "utf-8");
 
   const nodePath = execSync("which node", { encoding: "utf-8" }).trim();
-  const entryPath = join(__dirname, "..", "dist", "index.js");
+  const entryPath = join(PROJECT_ROOT, "dist", "src", "index.js");
   const workspacePath = join(MAXOS_HOME, "workspace");
   const envPath = process.env.PATH || "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin";
 
@@ -74,11 +79,11 @@ function uninstallLaunchd(): void {
 }
 
 function installSystemd(): void {
-  const templatePath = join(__dirname, "..", "services", "maxos.service");
+  const templatePath = join(PROJECT_ROOT, "services", "maxos.service");
   let unit = readFileSync(templatePath, "utf-8");
 
   const nodePath = execSync("which node", { encoding: "utf-8" }).trim();
-  const entryPath = join(__dirname, "..", "dist", "index.js");
+  const entryPath = join(PROJECT_ROOT, "dist", "src", "index.js");
   const workspacePath = join(MAXOS_HOME, "workspace");
   const envPath = process.env.PATH || "/usr/local/bin:/usr/bin:/bin";
 
