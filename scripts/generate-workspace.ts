@@ -15,6 +15,7 @@
  *   "tools": "Gmail, Calendar, GitHub, Notion",
  *   "telegramToken": "",          // optional
  *   "telegramUsers": [],          // optional
+ *   "primaryChannel": "telegram", // optional — "telegram", "imessage", "email"
  * }
  */
 
@@ -33,6 +34,20 @@ const TEMPLATES_DIR = join(__dirname, "..", "templates");
 async function loadTemplate(name: string): Promise<HandlebarsTemplateDelegate> {
   const raw = await readFile(join(TEMPLATES_DIR, name), "utf-8");
   return Handlebars.compile(raw);
+}
+
+/**
+ * Normalize telegramUsers to string IDs.
+ * Accepts: ["123"], [{"id":123,"name":"Mark"}], [123], or mixed.
+ */
+function normalizeTelegramUsers(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((entry) => {
+    if (typeof entry === "string") return entry;
+    if (typeof entry === "number") return String(entry);
+    if (entry && typeof entry === "object" && "id" in entry) return String((entry as { id: unknown }).id);
+    return String(entry);
+  });
 }
 
 async function main() {
@@ -65,10 +80,11 @@ async function main() {
     tools: (input.tools as string) || "Standard tools",
     emoji: "\u{1F916}",
     telegramToken: (input.telegramToken as string) || "",
-    telegramUsers: (input.telegramUsers as string[]) || [],
+    telegramUsers: normalizeTelegramUsers(input.telegramUsers),
     maxosHome: MAXOS_HOME,
     dateFormat: "YYYY-MM-DD",
     hasQmd,
+    primaryChannel: (input.primaryChannel as string) || "",
     customTasks: "",
     contextImport: (input.contextImport as string) || "",
   };

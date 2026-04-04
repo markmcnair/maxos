@@ -1,11 +1,55 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { EventEmitter } from "node:events";
+import { existsSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { logger } from "./utils/logger.js";
 
 const execFileAsync = promisify(execFile);
 
-const CLAUDE_PATH = process.env.CLAUDE_PATH || "/Users/Max/.local/bin/claude";
+/**
+ * Resolve the claude CLI path. Priority:
+ * 1. CLAUDE_PATH env var (explicit override)
+ * 2. claude in the same bin/ directory as the running node binary (nvm/homebrew)
+ * 3. Bare "claude" (fall back to PATH lookup)
+ */
+function resolveClaudePath(): string {
+  if (process.env.CLAUDE_PATH) return process.env.CLAUDE_PATH;
+
+  // Check sibling of the node binary (handles nvm, homebrew, etc.)
+  const siblingPath = join(dirname(process.execPath), "claude");
+  if (existsSync(siblingPath)) {
+    logger.info("engine:claude_path", { resolved: siblingPath });
+    return siblingPath;
+  }
+
+  return "claude";
+}
+
+const CLAUDE_PATH = resolveClaudePath();
+
+/**
+ * Build a rich PATH for Claude subprocess environments.
+ * The daemon may not inherit interactive shell PATH (no .zshrc sourcing),
+ * so we explicitly include common user binary locations.
+ */
+function buildEnginePath(): string {
+  const home = process.env.HOME || "";
+  const existing = process.env.PATH || "";
+  const extras = [
+    join(home, "bin"),                          // User scripts (gws-personal, gws-emprise)
+    join(home, ".local", "bin"),                // pipx, user installs
+    dirname(process.execPath),                  // nvm node bin dir (contains claude, npx, etc.)
+    "/opt/homebrew/bin",                        // Homebrew on Apple Silicon
+    "/usr/local/bin",                           // Homebrew on Intel / system installs
+  ];
+  // Prepend extras that aren't already in PATH
+  const parts = existing.split(":");
+  const toAdd = extras.filter(p => p && !parts.includes(p));
+  return [...toAdd, ...parts].join(":");
+}
+
+const ENGINE_PATH = buildEnginePath();
 
 export interface OneShotOptions {
   prompt: string;
@@ -23,7 +67,6 @@ export interface InteractiveOptions {
   model: string;
   permissionMode: string;
   allowedTools: string[];
-  resume: boolean;
   watchdogTimeout: number;
 }
 
@@ -46,7 +89,7 @@ export async function oneShot(opts: OneShotOptions): Promise<string> {
       cwd: opts.cwd,
       timeout: opts.timeout,
       maxBuffer: 10 * 1024 * 1024,
-      env: { ...process.env, TERM: "dumb" },
+      env: { ...process.env, TERM: "dumb", PATH: ENGINE_PATH },
     });
     return stdout.trim();
   } catch (err: unknown) {
@@ -56,10 +99,23 @@ export async function oneShot(opts: OneShotOptions): Promise<string> {
   }
 }
 
+/** Queued message with its promise resolver */
+interface QueuedMessage {
+  message: string;
+  resolve: (text: string) => void;
+  reject: (err: Error) => void;
+}
+
 /**
  * Interactive session using claude --print with stream-json.
  * Each send() spawns a new claude process with --resume to maintain conversation.
- * Emits "data" with assistant text, "done" when complete, "exit" on process end.
+ *
+ * send() returns a Promise<string> that resolves when THIS message's response
+ * is complete. No shared event listeners — each message gets its own promise.
+ * The gateway just awaits the promise. No listener stacking, no race conditions.
+ *
+ * Still extends EventEmitter for lifecycle events (watchdog, exit) that the
+ * gateway uses for session management — but NOT for response delivery.
  */
 export class InteractiveSession extends EventEmitter {
   private currentProcess: ChildProcess | null = null;
@@ -67,7 +123,9 @@ export class InteractiveSession extends EventEmitter {
   private _alive = false;
   private sessionId: string | null = null;
   private busy = false;
-  private messageQueue: string[] = [];
+  private queue: QueuedMessage[] = [];
+  private currentResolve: ((text: string) => void) | null = null;
+  private currentReject: ((err: Error) => void) | null = null;
 
   constructor(
     private readonly opts: InteractiveOptions & { cwd: string }
@@ -79,23 +137,45 @@ export class InteractiveSession extends EventEmitter {
     return this._alive;
   }
 
+  get isBusy(): boolean {
+    return this.busy;
+  }
+
+  /** The Claude CLI session ID, if captured. */
+  get claudeSessionId(): string | null {
+    return this.sessionId;
+  }
+
   start(): void {
     logger.info("engine:interactive:start", { session: this.opts.sessionName });
     this._alive = true;
   }
 
-  send(message: string): void {
+  /**
+   * Send a message and get the response. Returns a Promise that resolves
+   * when THIS message's Claude process finishes — not when any other
+   * message finishes. If the session is busy, the message is queued and
+   * the promise resolves when it's this message's turn.
+   */
+  send(message: string): Promise<string> {
     if (!this._alive) {
-      throw new Error("Session not alive");
+      return Promise.reject(new Error("Session not alive"));
     }
 
-    if (this.busy) {
-      this.messageQueue.push(message);
-      logger.info("engine:interactive:queued", { session: this.opts.sessionName, queueSize: this.messageQueue.length });
-      return;
-    }
+    return new Promise<string>((resolve, reject) => {
+      if (this.busy) {
+        this.queue.push({ message, resolve, reject });
+        logger.info("engine:interactive:queued", {
+          session: this.opts.sessionName,
+          queueSize: this.queue.length,
+        });
+        return;
+      }
 
-    this.processMessage(message);
+      this.currentResolve = resolve;
+      this.currentReject = reject;
+      this.processMessage(message);
+    });
   }
 
   private processMessage(message: string): void {
@@ -120,20 +200,21 @@ export class InteractiveSession extends EventEmitter {
 
     this.currentProcess = spawn(CLAUDE_PATH, args, {
       cwd: this.opts.cwd,
-      env: { ...process.env, TERM: "dumb" },
+      env: { ...process.env, TERM: "dumb", PATH: ENGINE_PATH },
       stdio: ["ignore", "pipe", "pipe"],
     });
 
     this.resetWatchdog();
 
     let buffer = "";
-    let responseText = "";
+    let resultText = "";
+    let assistantText = "";
+    let gotResult = false;
 
     this.currentProcess.stdout!.on("data", (chunk: Buffer) => {
       this.resetWatchdog();
       buffer += chunk.toString();
 
-      // Parse newline-delimited JSON
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
 
@@ -141,8 +222,13 @@ export class InteractiveSession extends EventEmitter {
         if (!line.trim()) continue;
         try {
           const event = JSON.parse(line);
-          this.handleStreamEvent(event, (text) => {
-            responseText += text;
+          this.handleStreamEvent(event, (text, isResult) => {
+            if (isResult) {
+              resultText = text;
+              gotResult = true;
+            } else {
+              assistantText += text;
+            }
           });
         } catch {
           // Partial JSON, skip
@@ -157,56 +243,85 @@ export class InteractiveSession extends EventEmitter {
     this.currentProcess.on("close", (code) => {
       this.clearWatchdog();
       this.busy = false;
+      this.currentProcess = null;
 
-      if (responseText.trim()) {
-        this.emit("data", responseText);
-        this.emit("done");
+      const responseText = (gotResult ? resultText : assistantText).trim();
+      logger.info("engine:interactive:process_exit", { session: this.opts.sessionName, code, responseLen: responseText.length });
+
+      // Resolve THIS message's promise
+      if (this.currentResolve) {
+        this.currentResolve(responseText);
+        this.currentResolve = null;
+        this.currentReject = null;
       }
 
-      logger.info("engine:interactive:process_exit", { session: this.opts.sessionName, code });
-
-      // Process queued messages
-      if (this.messageQueue.length > 0) {
-        const next = this.messageQueue.shift()!;
-        this.processMessage(next);
-      }
+      // Process next queued message
+      this.processNext();
     });
 
     this.currentProcess.on("error", (err) => {
       this.clearWatchdog();
       this.busy = false;
+      this.currentProcess = null;
       logger.error("engine:interactive:error", { session: this.opts.sessionName, error: err.message });
+
+      if (this.currentReject) {
+        this.currentReject(err);
+        this.currentResolve = null;
+        this.currentReject = null;
+      }
+
       this.emit("exit", 1);
     });
   }
 
-  private handleStreamEvent(event: Record<string, unknown>, collectText: (text: string) => void): void {
+  /** Shift the next queued message and process it. */
+  private processNext(): void {
+    if (this.queue.length === 0) return;
+
+    const next = this.queue.shift()!;
+    this.currentResolve = next.resolve;
+    this.currentReject = next.reject;
+    this.processMessage(next.message);
+  }
+
+  private handleStreamEvent(
+    event: Record<string, unknown>,
+    collectText: (text: string, isResult: boolean) => void,
+  ): void {
     const type = event.type as string;
 
-    // Capture session ID from the first message
-    if (type === "system" && event.session_id) {
+    // Capture session ID from system events
+    if (type === "system" && event.session_id && !this.sessionId) {
       this.sessionId = event.session_id as string;
       logger.info("engine:interactive:session_id", { session: this.opts.sessionName, id: this.sessionId });
+      this.emit("sessionId", this.sessionId);
     }
 
-    // Collect assistant text
+    // The "result" event is the final, authoritative response
+    if (type === "result") {
+      if (event.session_id && typeof event.session_id === "string") {
+        if (this.sessionId !== event.session_id) {
+          this.sessionId = event.session_id;
+          this.emit("sessionId", this.sessionId);
+        }
+      }
+      if (typeof event.result === "string" && event.result.trim()) {
+        collectText(event.result, true);
+      }
+      return;
+    }
+
+    // Collect assistant text as fallback (in case result event is missing)
     if (type === "assistant" && event.message) {
       const msg = event.message as Record<string, unknown>;
       const content = msg.content as Array<Record<string, unknown>>;
       if (content) {
         for (const block of content) {
           if (block.type === "text" && typeof block.text === "string") {
-            collectText(block.text);
+            collectText(block.text, false);
           }
         }
-      }
-    }
-
-    // Content block deltas (streaming text)
-    if (type === "content_block_delta") {
-      const delta = event.delta as Record<string, unknown> | undefined;
-      if (delta?.type === "text_delta" && typeof delta.text === "string") {
-        collectText(delta.text);
       }
     }
   }
@@ -214,6 +329,18 @@ export class InteractiveSession extends EventEmitter {
   kill(): void {
     this.clearWatchdog();
     this._alive = false;
+
+    // Reject all pending promises
+    if (this.currentReject) {
+      this.currentReject(new Error("Session killed"));
+      this.currentResolve = null;
+      this.currentReject = null;
+    }
+    for (const queued of this.queue) {
+      queued.reject(new Error("Session killed"));
+    }
+    this.queue = [];
+
     if (this.currentProcess) {
       this.currentProcess.kill();
       this.currentProcess = null;

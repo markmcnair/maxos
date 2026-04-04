@@ -7,6 +7,14 @@ export interface SessionState {
   messageCount: number;
 }
 
+export interface PendingOneShot {
+  id: string;
+  fireAt: number;    // Unix timestamp (ms)
+  prompt: string;
+  silent: boolean;
+  createdAt: number;
+}
+
 export interface DaemonState {
   version: number;
   timestamp: number;
@@ -16,6 +24,7 @@ export interface DaemonState {
     disabled: string[];
     lastRun: Record<string, number>;
   };
+  pendingOneShots: PendingOneShot[];
   channels: Record<string, { healthy: boolean; lastMessage: number }>;
 }
 
@@ -25,6 +34,7 @@ function emptyState(): DaemonState {
     timestamp: Date.now(),
     sessions: {},
     scheduler: { failures: {}, disabled: [], lastRun: {} },
+    pendingOneShots: [],
     channels: {},
   };
 }
@@ -71,6 +81,19 @@ export class StateStore {
     mkdirSync(this.baseDir, { recursive: true });
     const entry = JSON.stringify({ ts: Date.now(), event, ...data });
     appendFileSync(this.journalPath, entry + "\n");
+  }
+
+  getLastJournalEvent(): { ts: number; event: string } | null {
+    if (!existsSync(this.journalPath)) return null;
+    const content = readFileSync(this.journalPath, "utf-8").trim();
+    if (!content) return null;
+    const lines = content.split("\n");
+    const last = lines[lines.length - 1];
+    try {
+      return JSON.parse(last) as { ts: number; event: string };
+    } catch {
+      return null;
+    }
   }
 
   journalTrim(maxEntries: number): void {

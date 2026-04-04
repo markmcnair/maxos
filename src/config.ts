@@ -56,12 +56,12 @@ export interface MaxOSConfig {
 export const DEFAULT_CONFIG: MaxOSConfig = {
   identity: { name: "Max", emoji: "\u{1F916}", timezone: "America/Chicago" },
   engine: {
-    model: "sonnet",
+    model: "opus",
     permissionMode: "bypassPermissions",
     allowedTools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "WebSearch", "WebFetch", "Agent", "mcp__*"],
-    maxOneShotTimeout: 300_000,
-    watchdogTimeout: 300_000,
-    responseTimeout: 300_000,
+    maxOneShotTimeout: 600_000,
+    watchdogTimeout: 600_000,
+    responseTimeout: 600_000,
   },
   channels: {},
   sessions: {
@@ -72,7 +72,7 @@ export const DEFAULT_CONFIG: MaxOSConfig = {
   scheduler: {
     enabled: true,
     heartbeatFile: "workspace/HEARTBEAT.md",
-    maxConcurrentTasks: 1,
+    maxConcurrentTasks: 3,
     circuitBreakerThreshold: 3,
     protectedWindows: [],
   },

@@ -52,6 +52,19 @@ describe("StateStore", () => {
     assert.ok(entry.ts > 0);
   });
 
+  it("getLastJournalEvent returns the most recent entry", () => {
+    store.journalAppend("daemon_start", { recovery: "clean" });
+    store.journalAppend("daemon_stop", { reason: "shutdown" });
+    const last = store.getLastJournalEvent();
+    assert.ok(last);
+    assert.equal(last.event, "daemon_stop");
+    assert.ok(last.ts > 0);
+  });
+
+  it("getLastJournalEvent returns null when no journal exists", () => {
+    assert.equal(store.getLastJournalEvent(), null);
+  });
+
   it("trims crash journal to max entries", () => {
     for (let i = 0; i < 5; i++) {
       store.journalAppend(`event_${i}`, {});

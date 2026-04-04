@@ -24,7 +24,7 @@ describe("Integration: Config → State → Sessions → Scheduler", () => {
     // 1. Config loads with defaults
     const config = loadConfig(join(dir, "nonexistent.json"));
     assert.equal(config.identity.name, "Max");
-    assert.equal(config.engine.model, "sonnet");
+    assert.equal(config.engine.model, "opus");
 
     // 2. State store saves and recovers
     const state = new StateStore(dir);
@@ -113,7 +113,8 @@ describe("Integration: Config → State → Sessions → Scheduler", () => {
     let alertMessage = "";
     const alerter = async (msg: string) => { alertMessage = msg; };
 
-    const scheduler = new Scheduler(1, 3, [], runner, alerter);
+    const deliverer = async (_result: string, _taskName: string): Promise<void> => {};
+    const scheduler = new Scheduler(1, 3, [], runner, deliverer, alerter);
     const tasks = parseHeartbeat("## Every 30 minutes\n- Test task");
 
     // Manually trigger the task execution through state

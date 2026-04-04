@@ -38,3 +38,14 @@ Use it when:
 - The user says "remember when..." or "what did we decide about..."
 
 ALWAYS search before saying "I don't know" or "I don't have that."
+
+## Tool Troubleshooting
+
+If a tool fails (gws CLI auth error, MCP timeout, etc.), **fix it yourself**:
+1. Try the obvious fix first (retry, refresh auth via `auth login`, restart service)
+2. If that fails, try an alternative approach
+3. Only tell {{userName}} if you genuinely can't solve it after 2-3 attempts
+
+**Never say "run this yourself" or "try refreshing your token."** You have Bash. You fix it.
+
+**⛔ CREDENTIAL FILE GUARDRAIL:** NEVER move, copy, rename, delete, or decrypt any `.enc` file, `credentials.json`, or `credentials-*.json`. Some wrappers (especially secondary gws accounts) use fragile credential file swap techniques — touching these files WILL corrupt auth for ALL accounts. Safe actions: `auth status`, `auth login` (browser flow), verify with `+triage`/`+agenda`. If a secondary account can't be fixed via `auth login`, tell {{userName}} to handle it manually.

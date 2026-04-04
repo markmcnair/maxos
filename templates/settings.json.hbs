@@ -6,19 +6,13 @@
     "PreCompact": [{
       "hooks": [{
         "type": "prompt",
-        "prompt": "Context is about to be compacted. Write a thorough summary to today's daily journal at memory/YYYY-MM-DD.md (use today's actual date). Include: key decisions, tasks done/in-progress, commitments, current discussion topic. Append only."
+        "prompt": "Context is about to be compacted. Write a thorough summary to today's daily journal at memory/YYYY-MM-DD.md (use today's actual date). Include: key decisions, tasks done/in-progress, commitments, current discussion topic. Append only — do not create empty checkpoint entries."
       }]
     }],
     "PostCompact": [{
       "hooks": [{
         "type": "command",
         "command": "{{maxosHome}}/hooks/post-compact-inject.sh"
-      }]
-    }],
-    "Stop": [{
-      "hooks": [{
-        "type": "prompt",
-        "prompt": "If this is the end of a conversation (not mid-task), append a brief summary to today's journal at memory/YYYY-MM-DD.md. Topics, outcomes, next steps. Append only."
       }]
     }]
   }

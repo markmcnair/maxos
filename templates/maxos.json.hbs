@@ -5,11 +5,12 @@
     "timezone": "{{timezone}}"
   },
   "engine": {
-    "model": "sonnet",
+    "model": "opus",
     "permissionMode": "bypassPermissions",
     "allowedTools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "WebSearch", "WebFetch", "Agent", "mcp__*"],
-    "maxOneShotTimeout": 300000,
-    "watchdogTimeout": 300000
+    "maxOneShotTimeout": 600000,
+    "watchdogTimeout": 600000,
+    "responseTimeout": 600000
   },
   "channels": {
     {{#if telegramToken}}
@@ -30,9 +31,11 @@
   "scheduler": {
     "enabled": true,
     "heartbeatFile": "workspace/HEARTBEAT.md",
-    "maxConcurrentTasks": 1,
+    "maxConcurrentTasks": 3,
     "circuitBreakerThreshold": 3,
-    "protectedWindows": []
+    "protectedWindows": [
+      { "name": "sleep", "start": "22:00", "end": "06:00" }
+    ]
   },
   "reliability": {
     "stateSnapshotInterval": 30000,

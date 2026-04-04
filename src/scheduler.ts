@@ -1,11 +1,15 @@
 import { schedule, validate, type ScheduledTask } from "node-cron";
+import { randomBytes } from "node:crypto";
 import { logger } from "./utils/logger.js";
+import type { PendingOneShot } from "./state.js";
 
 export interface HeartbeatTask {
   name: string;
   cron: string;
   prompt: string;
   timeout?: number;
+  /** If true, task runs but output is NOT delivered to user channels */
+  silent?: boolean;
 }
 
 export interface ProtectedWindow {
@@ -24,10 +28,16 @@ export function parseHeartbeat(markdown: string): HeartbeatTask[] {
   const lines = markdown.split("\n");
   let currentCron: string | null = null;
 
+  let isSilent = false;
+
   for (const line of lines) {
     const headingMatch = line.match(/^##\s+(.+)/);
     if (headingMatch) {
-      const heading = headingMatch[1].trim();
+      let heading = headingMatch[1].trim();
+
+      // Check for [silent] tag — task runs but output is not delivered to user
+      isSilent = /\[silent\]/i.test(heading);
+      heading = heading.replace(/\[silent\]/gi, "").trim();
 
       // "Every N minutes"
       const everyMinMatch = heading.match(/^Every\s+(\d+)\s+minutes?$/i);
@@ -65,7 +75,7 @@ export function parseHeartbeat(markdown: string): HeartbeatTask[] {
         .replace(/[^a-z0-9\s]/g, "")
         .replace(/\s+/g, "-")
         .slice(0, 50);
-      tasks.push({ name, cron: currentCron, prompt });
+      tasks.push({ name, cron: currentCron, prompt, silent: isSilent });
     }
   }
 
@@ -124,6 +134,9 @@ export class Scheduler {
   private lastRun: Map<string, number> = new Map();
   private taskCrons: Map<string, string> = new Map();
   private runningCount = 0;
+  private pendingOneShots: PendingOneShot[] = [];
+  private oneShotInterval: ReturnType<typeof setInterval> | null = null;
+  private oneShotStateCallback: ((shots: PendingOneShot[]) => void) | null = null;
 
   constructor(
     private readonly maxConcurrent: number,
@@ -185,10 +198,10 @@ export class Scheduler {
   }
 
   private async executeTask(task: HeartbeatTask): Promise<void> {
-    if (isInProtectedWindow(new Date(), this.protectedWindows)) {
-      logger.info("scheduler:skipped_protected", { task: task.name });
-      return;
-    }
+    // Protected windows are NOT enforced here. Every scheduled task was set up
+    // by the user — they chose the time, we honor it. Protected windows exist
+    // as context for the LLM (don't proactively message during these hours),
+    // not as a hard infrastructure block.
 
     if (this.disabled.has(task.name)) {
       return;
@@ -205,11 +218,12 @@ export class Scheduler {
       this.failures.set(task.name, 0);
       this.lastRun.set(task.name, Date.now());
 
-      // Deliver the result to the user via connected channels
-      if (result.trim()) {
+      if (result.trim() && !task.silent) {
         await this.deliverer(result, task.name).catch((err) => {
           logger.error("scheduler:deliver_failed", { task: task.name, error: err instanceof Error ? err.message : String(err) });
         });
+      } else if (task.silent) {
+        logger.info("scheduler:silent_complete", { task: task.name, resultLength: result.length });
       }
     } catch (err) {
       const count = (this.failures.get(task.name) ?? 0) + 1;
@@ -269,8 +283,97 @@ export class Scheduler {
     return result;
   }
 
+  // --- One-shot scheduling ---
+
+  /** Load pending one-shots from persisted state */
+  loadOneShots(shots: PendingOneShot[]): void {
+    this.pendingOneShots = [...shots];
+  }
+
+  /** Register a callback so the scheduler can persist state after one-shot changes */
+  onOneShotChange(cb: (shots: PendingOneShot[]) => void): void {
+    this.oneShotStateCallback = cb;
+  }
+
+  /** Schedule a one-time task at a specific time. Returns the generated ID. */
+  addOneShot(fireAt: number, prompt: string, silent = false): string {
+    const id = randomBytes(4).toString("hex");
+    const shot: PendingOneShot = { id, fireAt, prompt, silent, createdAt: Date.now() };
+    this.pendingOneShots.push(shot);
+    logger.info("scheduler:oneshot_added", { id, fireAt: new Date(fireAt).toISOString() });
+    this.oneShotStateCallback?.(this.pendingOneShots);
+    return id;
+  }
+
+  /** Remove a pending one-shot by ID */
+  removeOneShot(id: string): boolean {
+    const idx = this.pendingOneShots.findIndex((s) => s.id === id);
+    if (idx === -1) return false;
+    this.pendingOneShots.splice(idx, 1);
+    this.oneShotStateCallback?.(this.pendingOneShots);
+    return true;
+  }
+
+  /** Get all pending one-shots */
+  getPendingOneShots(): PendingOneShot[] {
+    return [...this.pendingOneShots];
+  }
+
+  /** Start the one-shot tick loop (checks every 30s) */
+  startOneShotLoop(): void {
+    if (this.oneShotInterval) return;
+    this.oneShotInterval = setInterval(() => {
+      void this.tickOneShots();
+    }, 30_000);
+    // Also run immediately in case something is already due
+    void this.tickOneShots();
+  }
+
+
+  private async tickOneShots(): Promise<void> {
+    const now = Date.now();
+    const due = this.pendingOneShots.filter((s) => s.fireAt <= now);
+    if (due.length === 0) return;
+
+    for (const shot of due) {
+      // One-shots ALWAYS fire — they are user-initiated with an explicit time.
+      // Protected windows only apply to recurring cron tasks.
+
+      if (this.runningCount >= this.maxConcurrent) {
+        logger.info("scheduler:oneshot_skipped_concurrency", { id: shot.id });
+        continue; // Will retry on next tick
+      }
+
+      // Remove from pending BEFORE executing (prevents double-fire)
+      const idx = this.pendingOneShots.findIndex((s) => s.id === shot.id);
+      if (idx !== -1) this.pendingOneShots.splice(idx, 1);
+      this.oneShotStateCallback?.(this.pendingOneShots);
+
+      logger.info("scheduler:oneshot_firing", { id: shot.id });
+      this.runningCount++;
+      try {
+        const result = await this.runner(shot.prompt, `oneshot-${shot.id}`);
+        if (result.trim() && !shot.silent) {
+          await this.deliverer(result, `oneshot-${shot.id}`).catch((err) => {
+            logger.error("scheduler:oneshot_deliver_failed", { id: shot.id, error: err instanceof Error ? err.message : String(err) });
+          });
+        }
+        logger.info("scheduler:oneshot_complete", { id: shot.id });
+      } catch (err) {
+        logger.error("scheduler:oneshot_failed", { id: shot.id, error: err instanceof Error ? err.message : String(err) });
+        await this.alerter(`One-time task failed: ${err instanceof Error ? err.message : String(err)}`).catch(() => {});
+      } finally {
+        this.runningCount--;
+      }
+    }
+  }
+
   stopAll(): void {
     for (const job of this.jobs.values()) job.stop();
     this.jobs.clear();
+    if (this.oneShotInterval) {
+      clearInterval(this.oneShotInterval);
+      this.oneShotInterval = null;
+    }
   }
 }

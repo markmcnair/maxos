@@ -45,6 +45,20 @@ describe("parseHeartbeat", () => {
     const tasks = parseHeartbeat(md);
     assert.equal(tasks.length, 2);
   });
+
+  it("parses [silent] tag on headings", () => {
+    const md = "## Every 45 minutes [silent]\n- Write a checkpoint to today's journal";
+    const tasks = parseHeartbeat(md);
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0].cron, "*/45 * * * *");
+    assert.equal(tasks[0].silent, true);
+  });
+
+  it("non-silent tasks have silent as false", () => {
+    const md = "## 0 6 * * 0-5 (Morning brief)\n- Run morning brief";
+    const tasks = parseHeartbeat(md);
+    assert.equal(tasks[0].silent, false);
+  });
 });
 
 describe("isInProtectedWindow", () => {

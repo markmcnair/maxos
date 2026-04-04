@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'if [ -d ~/.maxos/workspace ]; then echo \"WORKSPACE_EXISTS — help with whatever the user needs. Read docs/design-spec.md for architecture.\"; else echo \"NO_WORKSPACE — FRESH INSTALL. You MUST read .claude/skills/onboard.md and follow every step. Do NOT explore the repo, check git, run tests, or read README. Go directly to the onboard skill NOW.\"; fi'"
+          }
+        ]
+      }
+    ]
+  }
+}
