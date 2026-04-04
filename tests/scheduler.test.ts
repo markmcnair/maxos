@@ -75,19 +75,19 @@ describe("isInProtectedWindow", () => {
   });
 
   it("detects day-based window", () => {
-    const windows = [{ name: "sabbath", day: "saturday" }];
+    const windows = [{ name: "family-time", day: "saturday" }];
     const date = new Date("2026-03-28T12:00:00");
     assert.equal(isInProtectedWindow(date, windows), true);
   });
 
   it("detects day+time window", () => {
-    const windows = [{ name: "date-night", day: "thursday", start: "17:30" }];
+    const windows = [{ name: "focus-block", day: "thursday", start: "17:30" }];
     const date = new Date("2026-03-26T18:00:00");
     assert.equal(isInProtectedWindow(date, windows), true);
   });
 
   it("returns false when no windows match", () => {
-    const windows = [{ name: "sabbath", day: "saturday" }];
+    const windows = [{ name: "family-time", day: "saturday" }];
     const date = new Date("2026-03-25T12:00:00");
     assert.equal(isInProtectedWindow(date, windows), false);
   });

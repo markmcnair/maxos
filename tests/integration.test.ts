@@ -76,7 +76,7 @@ describe("Integration: Config → State → Sessions → Scheduler", () => {
     // 5. Protected windows work
     const windows = [
       { name: "sleep", start: "22:00", end: "06:00" },
-      { name: "sabbath", day: "saturday" },
+      { name: "family-time", day: "saturday" },
     ];
     assert.equal(isInProtectedWindow(new Date("2026-03-27T23:00:00"), windows), true);
     assert.equal(isInProtectedWindow(new Date("2026-03-27T12:00:00"), windows), false);

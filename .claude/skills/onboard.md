@@ -54,8 +54,8 @@ The user skipped `npx maxos init` and came straight to Claude Code. You need to 
    JSON schema: `{ agentName, userName, timezone, personality, workContext, tools, telegramToken, telegramUsers, primaryChannel, contextImport }`
 
    **CRITICAL: `telegramUsers` must be an array of string IDs, NOT objects.**
-   - **RIGHT:** `"telegramUsers": ["8117092034"]`
-   - **WRONG:** `"telegramUsers": [{"id": 8117092034, "name": "Mark"}]`
+   - **RIGHT:** `"telegramUsers": ["123456789"]`
+   - **WRONG:** `"telegramUsers": [{"id": 123456789, "name": "Alice"}]`
 
 Then proceed to Phase 1.
 
@@ -239,12 +239,12 @@ The template creates a default sleep window (22:00–06:00). Before wiring autom
 > "Scheduled tasks won't fire during protected windows. Right now I have:
 > - **Sleep:** 10 PM – 6 AM (no messages)
 >
-> Do you have any recurring off-limits times? Common ones: Sabbath (full day), date night, family dinner, etc."
+> Do you have any recurring off-limits times? Examples: a full day off, weekly family dinner, focus blocks, etc."
 
 Whatever the user confirms, update `~/.maxos/maxos.json` — read it, modify `scheduler.protectedWindows`, write it back. Format:
 ```jsonc
-{ "name": "sabbath", "day": "saturday" }                    // full day
-{ "name": "date-night", "day": "thursday", "start": "17:30" } // day + start (until midnight)
+{ "name": "family-time", "day": "sunday" }                   // full day
+{ "name": "focus-block", "day": "wednesday", "start": "14:00" } // day + start (until midnight)
 { "name": "sleep", "start": "22:00", "end": "06:00" }       // time range (overnight OK)
 ```
 
@@ -307,7 +307,7 @@ Write all the automations you recorded in Phase 2:
 **DO NOT create "journal checkpoint" tasks.** The generator already created the 45-min checkpoint. Don't duplicate it.
 
 **DO NOT include delivery instructions in task prompts.** The daemon automatically delivers task output to the user via their primary channel. Task prompts should NOT contain:
-- "Send to chat_id 8117092034" or any chat_id references
+- "Send to chat_id 123456789" or any chat_id references
 - "Deliver via Telegram" or "send via Telegram reply tool"
 - curl/WebFetch calls to the Telegram Bot API
 - Any mention of how to deliver the result

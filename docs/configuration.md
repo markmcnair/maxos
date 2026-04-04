@@ -50,7 +50,7 @@ Secrets go in `~/.maxos/.env` (never committed). The daemon loads this file at s
       "daily": "04:00"           // Time (HH:MM) to reset all sessions daily
     },
     "identityLinks": {}          // Map identity name to channel-specific IDs
-    // Example: { "mark": ["telegram:8117092034", "discord:123456"] }
+    // Example: { "alice": ["telegram:123456789", "discord:987654321"] }
   },
 
   // --- Scheduler ---
@@ -63,9 +63,8 @@ Secrets go in `~/.maxos/.env` (never committed). The daemon loads this file at s
     // Example:
     // [
     //   { "name": "sleep", "start": "22:00", "end": "06:00" },
-    //   { "name": "sabbath", "day": "saturday" },
-    //   { "name": "date-night", "day": "thursday", "start": "17:30" },
-    //   { "name": "sabbath-dinner", "day": "friday", "start": "17:30" }
+    //   { "name": "family-time", "day": "sunday" },
+    //   { "name": "focus-block", "day": "wednesday", "start": "14:00", "end": "17:00" }
     // ]
   },
 

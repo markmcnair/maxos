@@ -57,7 +57,7 @@ npx maxos start      # Starts the daemon with automatic pre-flight
 | **Three-tier memory** | In-session context, daily journals that survive resets, and semantic search across your whole workspace. Ask about a decision from last month and get an answer. |
 | **Session continuity** | Send a compound request, come back an hour later, ask a follow-up. The agent remembers the whole thread. |
 | **Crash recovery** | State snapshots every 30 seconds. Circuit breakers on failing tasks. Watchdog timers. If it crashes, it restarts and tells you what happened. |
-| **Protected windows** | Sleep hours, Sabbath, date night. Tasks still fire on schedule, but the agent won't bother you with unsolicited ideas at 3am. |
+| **Protected windows** | Configurable quiet hours. Tasks still fire on schedule, but the agent won't message you with unsolicited ideas at 3am. |
 | **Voice transcription** | Send a voice memo on Telegram. Whisper transcribes it locally, the agent reads the transcript. |
 
 ## How it works

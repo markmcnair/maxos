@@ -210,7 +210,7 @@ Same person on multiple channels shares one session:
 ```jsonc
 {
   "identityLinks": {
-    "mark": ["telegram:8117092034", "discord:123456"]
+    "alice": ["telegram:123456789", "discord:987654321"]
   }
 }
 ```
@@ -274,9 +274,8 @@ If a task fails 3 consecutive times:
   "scheduler": {
     "protectedWindows": [
       { "name": "sleep", "start": "22:00", "end": "06:00" },
-      { "name": "sabbath", "day": "saturday" },
-      { "name": "date-night", "day": "thursday", "start": "17:30" },
-      { "name": "sabbath-dinner", "day": "friday", "start": "17:30" }
+      { "name": "family-time", "day": "sunday" },
+      { "name": "focus-block", "day": "wednesday", "start": "14:00", "end": "17:00" }
     ]
   }
 }
@@ -374,7 +373,7 @@ QMD runs as an MCP server indexing all workspace files. SOUL.md instructs the ag
     "telegram": {
       "enabled": true,
       "botToken": "${TELEGRAM_BOT_TOKEN}",
-      "allowedUsers": ["8117092034"],
+      "allowedUsers": ["123456789"],
       "dmPolicy": "allowlist",
       "forumTopics": false
     }

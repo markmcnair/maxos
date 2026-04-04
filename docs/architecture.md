@@ -92,7 +92,7 @@ The scheduler reads `~/.maxos/workspace/HEARTBEAT.md` and parses it into tasks:
 ### Execution Pipeline
 
 1. `node-cron` fires the job at the scheduled time.
-2. Scheduler checks if the current time falls within any **protected window** (sleep, sabbath, date night). If yes, the task is skipped silently.
+2. Scheduler checks if the current time falls within any **protected window** (sleep hours, quiet times, focus blocks). If yes, the task is skipped silently.
 3. Scheduler checks if the task is **disabled** (circuit breaker tripped). If yes, skip.
 4. Scheduler checks the **concurrency limit** (`maxConcurrentTasks`, default 1). If at capacity, skip.
 5. The task prompt is passed to `Gateway.runOneShot()`, which calls `engine.oneShot()`.
@@ -154,7 +154,7 @@ Map the same person across channels to one session:
 ```jsonc
 {
   "identityLinks": {
-    "mark": ["telegram:8117092034", "discord:123456"]
+    "alice": ["telegram:123456789", "discord:987654321"]
   }
 }
 ```
