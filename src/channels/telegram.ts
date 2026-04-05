@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import { smartChunk } from "../utils/chunker.js";
-import { markdownToTelegramHtml } from "../utils/markdown-to-telegram.js";
+import { markdownToTelegramHtml, stripHtmlToPlain } from "../utils/markdown-to-telegram.js";
 import { logger } from "../utils/logger.js";
 import type {
   ChannelAdapter,
@@ -317,7 +317,9 @@ export class TelegramAdapter implements ChannelAdapter {
     // Convert Markdown to Telegram HTML — Claude outputs Markdown but Telegram
     // renders HTML. Without this, **bold** shows as literal asterisks.
     const formatted = markdownToTelegramHtml(content.text);
-    const chunks = smartChunk(formatted, 4096);
+    // Chunk at 3800, not 4096 — HTML tags add overhead beyond visible text,
+    // and Telegram counts UTF-8 bytes not characters for some content.
+    const chunks = smartChunk(formatted, 3800);
 
     for (const chunk of chunks) {
       try {
@@ -330,25 +332,28 @@ export class TelegramAdapter implements ChannelAdapter {
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
 
-        // Message too long — re-chunk at a smaller size and retry as plain text
+        // Message too long — strip HTML, re-chunk smaller, retry as plain text
         if (errMsg.includes("message is too long")) {
           logger.warn("telegram:message_too_long", { chunkLen: chunk.length });
-          const smallerChunks = smartChunk(chunk.replace(/<[^>]+>/g, ""), 3500);
-          for (const sc of smallerChunks) {
-            const smallOpts: Record<string, unknown> = {};
-            if (type === "topic") smallOpts.message_thread_id = Number(id);
-            await this.bot.api.sendMessage(chatId, sc, smallOpts).catch(() => {});
+          const plainChunks = smartChunk(stripHtmlToPlain(chunk), 3400);
+          for (const pc of plainChunks) {
+            const plainOpts: Record<string, unknown> = {};
+            if (type === "topic") plainOpts.message_thread_id = Number(id);
+            await this.bot.api.sendMessage(chatId, pc, plainOpts).catch((retryErr) => {
+              logger.error("telegram:retry_failed", { error: String(retryErr), chunkLen: pc.length });
+            });
           }
           continue;
         }
 
-        // HTML parsing failed — retry this chunk as plain text
+        // HTML parsing failed — strip tags, unescape entities, retry as plain text
         if (errMsg.includes("can't parse entities")) {
           logger.warn("telegram:html_parse_failed", { chunkLen: chunk.length });
-          const plainChunk = chunk.replace(/<[^>]+>/g, "");
           const plainOpts: Record<string, unknown> = {};
           if (type === "topic") plainOpts.message_thread_id = Number(id);
-          await this.bot.api.sendMessage(chatId, plainChunk, plainOpts).catch(() => {});
+          await this.bot.api.sendMessage(chatId, stripHtmlToPlain(chunk), plainOpts).catch((retryErr) => {
+            logger.error("telegram:retry_failed", { error: String(retryErr), chunkLen: chunk.length });
+          });
           continue;
         }
 

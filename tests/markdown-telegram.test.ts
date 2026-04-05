@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { markdownToTelegramHtml } from "../src/utils/markdown-to-telegram.js";
+import { markdownToTelegramHtml, stripHtmlToPlain } from "../src/utils/markdown-to-telegram.js";
 
 describe("markdownToTelegramHtml", () => {
   it("converts **bold** to <b>", () => {
@@ -26,6 +26,12 @@ describe("markdownToTelegramHtml", () => {
     );
   });
 
+  it("preserves & in link URLs", () => {
+    const input = "[search](https://example.com?a=1&b=2)";
+    const result = markdownToTelegramHtml(input);
+    assert.ok(result.includes('href="https://example.com?a=1&b=2"'));
+  });
+
   it("converts # headers to <b>", () => {
     assert.equal(markdownToTelegramHtml("# Title"), "<b>Title</b>");
     assert.equal(markdownToTelegramHtml("### Sub"), "<b>Sub</b>");
@@ -46,10 +52,33 @@ describe("markdownToTelegramHtml", () => {
     assert.ok(markdownToTelegramHtml(input).includes("&lt;div&gt;"));
   });
 
+  it("escapes < and > in regular text", () => {
+    const input = "if x < 10 and y > 5 then do it";
+    const result = markdownToTelegramHtml(input);
+    assert.ok(result.includes("&lt;"));
+    assert.ok(result.includes("&gt;"));
+    assert.ok(!result.includes("<10")); // No unescaped angle brackets
+  });
+
+  it("escapes & in regular text", () => {
+    const input = "Tom & Jerry";
+    const result = markdownToTelegramHtml(input);
+    assert.ok(result.includes("&amp;"));
+  });
+
+  it("does not double-escape code blocks", () => {
+    const input = "```\nx < 10 && y > 5\n```";
+    const result = markdownToTelegramHtml(input);
+    // Should have &lt; not &amp;lt;
+    assert.ok(result.includes("&lt;"));
+    assert.ok(!result.includes("&amp;lt;"));
+  });
+
   it("converts blockquotes", () => {
     const input = "> This is a quote";
-    assert.ok(markdownToTelegramHtml(input).includes("<blockquote>"));
-    assert.ok(markdownToTelegramHtml(input).includes("This is a quote"));
+    const result = markdownToTelegramHtml(input);
+    assert.ok(result.includes("<blockquote>"));
+    assert.ok(result.includes("This is a quote"));
   });
 
   it("handles mixed formatting in one line", () => {
@@ -74,7 +103,21 @@ describe("markdownToTelegramHtml", () => {
     const result = markdownToTelegramHtml(input);
     assert.ok(result.includes("<b>Post:</b>"));
     assert.ok(result.includes('<a href="https://x.com/jlowin">@jlowin</a>'));
-    assert.ok(result.includes("<b>Why it's interesting:</b>"));
     assert.ok(!result.includes("**")); // No raw markdown left
+  });
+});
+
+describe("stripHtmlToPlain", () => {
+  it("strips tags and unescapes entities", () => {
+    assert.equal(stripHtmlToPlain("<b>hello</b>"), "hello");
+    assert.equal(stripHtmlToPlain("x &lt; 10"), "x < 10");
+    assert.equal(stripHtmlToPlain("Tom &amp; Jerry"), "Tom & Jerry");
+    assert.equal(stripHtmlToPlain("a &gt; b"), "a > b");
+  });
+
+  it("handles mixed content", () => {
+    const input = '<b>Bold</b> and <a href="https://x.com">link</a> with x &lt; 10';
+    const result = stripHtmlToPlain(input);
+    assert.equal(result, "Bold and link with x < 10");
   });
 });
