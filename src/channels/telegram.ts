@@ -328,24 +328,31 @@ export class TelegramAdapter implements ChannelAdapter {
 
         await this.bot.api.sendMessage(chatId, chunk, opts);
       } catch (err) {
-        // If HTML parsing fails, retry without parse_mode (plain text fallback)
-        if (err instanceof Error && err.message.includes("can't parse entities")) {
-          logger.warn("telegram:html_parse_failed", { chunkLen: chunk.length });
-          try {
-            const fallbackOpts: Record<string, unknown> = {};
-            if (type === "topic") fallbackOpts.message_thread_id = Number(id);
-            await this.bot.api.sendMessage(chatId, content.text, fallbackOpts);
-            return; // Sent as plain text — skip remaining chunks
-          } catch (fallbackErr) {
-            logger.error("telegram:send_fallback_error", {
-              error: fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr),
-            });
-            throw fallbackErr;
+        const errMsg = err instanceof Error ? err.message : String(err);
+
+        // Message too long — re-chunk at a smaller size and retry as plain text
+        if (errMsg.includes("message is too long")) {
+          logger.warn("telegram:message_too_long", { chunkLen: chunk.length });
+          const smallerChunks = smartChunk(chunk.replace(/<[^>]+>/g, ""), 3500);
+          for (const sc of smallerChunks) {
+            const smallOpts: Record<string, unknown> = {};
+            if (type === "topic") smallOpts.message_thread_id = Number(id);
+            await this.bot.api.sendMessage(chatId, sc, smallOpts).catch(() => {});
           }
+          continue;
         }
-        logger.error("telegram:send_error", {
-          error: err instanceof Error ? err.message : String(err),
-        });
+
+        // HTML parsing failed — retry this chunk as plain text
+        if (errMsg.includes("can't parse entities")) {
+          logger.warn("telegram:html_parse_failed", { chunkLen: chunk.length });
+          const plainChunk = chunk.replace(/<[^>]+>/g, "");
+          const plainOpts: Record<string, unknown> = {};
+          if (type === "topic") plainOpts.message_thread_id = Number(id);
+          await this.bot.api.sendMessage(chatId, plainChunk, plainOpts).catch(() => {});
+          continue;
+        }
+
+        logger.error("telegram:send_error", { error: errMsg });
         throw err;
       }
     }
