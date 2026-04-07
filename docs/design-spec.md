@@ -255,7 +255,8 @@ Each recurring task runs as a one-shot (Engine Mode B). The scheduler:
 1. Ensures `maxConcurrentTasks` limit (default: 3)
 2. Passes the bullet point text as the prompt
 3. Routes output to user's primary channel if non-empty (unless `[silent]`)
-4. Tracks consecutive failures per task
+4. Writes a summary of the output to today's daily journal (`memory/YYYY-MM-DD.md`) so interactive sessions have visibility into what scheduled tasks reported
+5. Tracks consecutive failures per task
 
 One-shot (one-time) tasks follow the same execution path but are stored as `PendingOneShot` entries in state.json rather than parsed from HEARTBEAT.md. A 30-second tick loop checks for due one-shots. They are removed from state before execution to prevent double-fire on crash.
 

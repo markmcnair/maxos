@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, appendFileSync, watchFile, unwatchFile } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { loadConfig, type MaxOSConfig } from "./config.js";
@@ -26,6 +26,7 @@ export class Gateway {
   private resetCheckInterval: ReturnType<typeof setInterval> | null = null;
   private lastResetDate: string | null = null;
   private shuttingDown = false;
+  private heartbeatPath: string = "";
 
   constructor(private readonly foreground: boolean) {
     if (foreground) enableConsoleLogging();
@@ -101,15 +102,26 @@ export class Gateway {
   }
 
   private startScheduler(): void {
-    const heartbeatPath = join(MAXOS_HOME, this.config.scheduler.heartbeatFile);
-    if (!existsSync(heartbeatPath)) {
-      logger.warn("gateway:no_heartbeat", { path: heartbeatPath });
+    this.heartbeatPath = join(MAXOS_HOME, this.config.scheduler.heartbeatFile);
+    if (!existsSync(this.heartbeatPath)) {
+      logger.warn("gateway:no_heartbeat", { path: this.heartbeatPath });
       return;
     }
-    const md = readFileSync(heartbeatPath, "utf-8");
+    this.reloadHeartbeat();
+
+    // Watch for changes so edits to HEARTBEAT.md take effect without a restart
+    watchFile(this.heartbeatPath, { interval: 5000 }, () => {
+      logger.info("gateway:heartbeat_changed");
+      this.reloadHeartbeat();
+    });
+  }
+
+  private reloadHeartbeat(): void {
+    if (!this.heartbeatPath || !existsSync(this.heartbeatPath)) return;
+    const md = readFileSync(this.heartbeatPath, "utf-8");
     const tasks = parseHeartbeat(md);
     this.scheduler.schedule(tasks);
-    logger.info("gateway:scheduler_started", { taskCount: tasks.length });
+    logger.info("gateway:scheduler_loaded", { taskCount: tasks.length });
   }
 
   private startDailyResetCheck(): void {
@@ -186,6 +198,10 @@ export class Gateway {
             res.end(JSON.stringify({ ok: false, error: "Invalid request body" }));
           }
         });
+      } else if (req.url === "/api/cron/reload" && req.method === "POST") {
+        this.reloadHeartbeat();
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, tasks: this.scheduler.listTasks() }));
       } else if (req.url === "/api/oneshot" && req.method === "POST") {
         this.readBody(req).then((body) => {
           try {
@@ -437,6 +453,11 @@ export class Gateway {
 
   private async deliverTaskResult(result: string, taskName: string): Promise<void> {
     logger.info("gateway:deliver_task", { task: taskName, length: result.length });
+
+    // Write task output to daily journal so interactive sessions can see it.
+    // Without this, one-shot tasks and interactive sessions are blind to each other.
+    this.journalTaskResult(taskName, result);
+
     // Send scheduled task results to the primary user on the first healthy channel
     for (const channel of this.channels) {
       if (channel.isHealthy()) {
@@ -448,6 +469,37 @@ export class Gateway {
       }
     }
     logger.warn("gateway:deliver_task:no_channel", { task: taskName });
+  }
+
+  /**
+   * Append a brief summary of a scheduled task's output to today's daily journal.
+   * This bridges the gap between one-shot tasks and interactive sessions —
+   * the interactive session reads the journal and knows what tasks reported.
+   */
+  private journalTaskResult(taskName: string, result: string): void {
+    try {
+      const now = new Date();
+      const dateStr = now.toISOString().slice(0, 10);
+      const timeStr = now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+      const memoryDir = join(MAXOS_HOME, "workspace", "memory");
+      const journalPath = join(memoryDir, `${dateStr}.md`);
+
+      // Truncate result to first ~500 chars for the journal (full output went to Telegram)
+      const summary = result.length > 500
+        ? result.slice(0, 500).trimEnd() + "..."
+        : result;
+
+      const entry = `\n\n### ${taskName} (${timeStr})\n${summary}\n`;
+
+      if (!existsSync(memoryDir)) mkdirSync(memoryDir, { recursive: true });
+      appendFileSync(journalPath, entry);
+      logger.info("gateway:journal_task", { task: taskName, journal: journalPath });
+    } catch (err) {
+      logger.error("gateway:journal_task:error", {
+        task: taskName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   private async alertUser(message: string): Promise<void> {
@@ -491,6 +543,7 @@ export class Gateway {
     if (this.healthServer) this.healthServer.close();
 
     this.scheduler.stopAll();
+    if (this.heartbeatPath) unwatchFile(this.heartbeatPath);
 
     // Wait for in-flight work to complete (up to 30s)
     const drainStart = Date.now();
