@@ -257,24 +257,10 @@ export class Gateway {
     });
   }
 
-  private static readonly ACK_PHRASES = [
-    "On it.",
-    "Working on that now.",
-    "Give me a sec.",
-    "Pulling that together.",
-    "Let me check.",
-    "One moment.",
-    "Looking into it.",
-    "Got it — working.",
-  ];
-
-  private ackIndex = 0;
-
-  private nextAck(): string {
-    const phrase = Gateway.ACK_PHRASES[this.ackIndex % Gateway.ACK_PHRASES.length];
-    this.ackIndex++;
-    return phrase;
-  }
+  // Ack messages are handled by the LLM via telegram-behavior.md rules,
+  // not hardcoded in the gateway. The LLM decides whether a message needs
+  // an ack based on whether tool use is required. Conversational replies
+  // ("BEAUTIFUL!", "thanks", etc.) get a direct response, not "Working on that now."
 
   /**
    * Build the prompt string from an inbound message.
@@ -352,11 +338,6 @@ export class Gateway {
     if (this.shuttingDown) return;
 
     const channel = this.channels.find((c) => c.name === msg.channelName);
-
-    // Send an immediate acknowledgment message so user knows we're alive
-    if (channel) {
-      await channel.send(msg.conversationId, { text: this.nextAck(), format: "text" }).catch(() => {});
-    }
 
     const sessionName = this.sessions.route(msg);
     logger.info("gateway:message", { from: msg.senderId, session: sessionName });
