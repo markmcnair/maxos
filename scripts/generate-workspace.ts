@@ -19,7 +19,7 @@
  * }
  */
 
-import { mkdirSync, writeFileSync, existsSync, chmodSync, copyFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, chmodSync, copyFileSync, readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
@@ -87,6 +87,10 @@ async function main() {
     primaryChannel: (input.primaryChannel as string) || "",
     customTasks: "",
     contextImport: (input.contextImport as string) || "",
+    cognitiveStyle: (input.cognitiveStyle as string) || "",
+    triggerPhrases: (input.triggerPhrases as string) || "",
+    timeEnergy: (input.timeEnergy as string) || "",
+    spendingLimit: (input.spendingLimit as string) || "$100",
   };
 
   // Create directory structure
@@ -122,6 +126,29 @@ async function main() {
     const content = tmpl(ctx);
     writeFileSync(file.output, content);
     console.log(`Created ${file.output.replace(MAXOS_HOME, "~/.maxos")}`);
+  }
+
+  // Render rules templates into workspace/.claude/rules/
+  const rulesTemplateDir = join(TEMPLATES_DIR, "rules");
+  if (existsSync(rulesTemplateDir)) {
+    const rulesDir = join(MAXOS_HOME, "workspace", ".claude", "rules");
+    for (const file of readdirSync(rulesTemplateDir)) {
+      const srcPath = join(rulesTemplateDir, file);
+      const outName = file.replace(/\.hbs$/, "");
+      const dstPath = join(rulesDir, outName);
+
+      if (file.endsWith(".hbs")) {
+        // Render Handlebars template
+        const raw = await readFile(srcPath, "utf-8");
+        const content = Handlebars.compile(raw)(ctx);
+        if (content.trim()) {
+          writeFileSync(dstPath, content);
+        }
+      } else {
+        // Static file — copy directly
+        copyFileSync(srcPath, dstPath);
+      }
+    }
   }
 
   // Telegram env file

@@ -25,7 +25,20 @@ cat ~/.claude/.mcp.json 2>/dev/null
 uname -s && date +%Z
 ```
 
-If you find an Obsidian vault, read its CLAUDE.md. If you find Claude rules, read them. If you find a CCBot .env, note the token and user ID. Read anything that describes who the user is.
+If you find an Obsidian vault, read its CLAUDE.md. If you find Claude rules (`.claude/rules/*.md`), read them ALL. If you find a CCBot .env, note the token and user ID. Read anything that describes who the user is.
+
+**CRITICAL: Extract operational philosophy, not just identity.** When reading CLAUDE.md or similar files, look for and capture:
+- Prime directives / operating framework (e.g., "Create Value, Remove Toil, Automate")
+- Cognitive style (ADHD, learning preferences, communication patterns)
+- Trigger phrases (what specific words/patterns mean)
+- Delegation boundaries (spending limits, approval rules, "heart issues")
+- Commitment filters (what the user says yes/no to)
+- Guardrails (when to intervene vs stay out of the way)
+- Time/energy preferences (what to protect, what to automate)
+
+Feed cognitive style, trigger phrases, and time/energy into the generator as `cognitiveStyle`, `triggerPhrases`, and `timeEnergy` fields. Feed spending limits as `spendingLimit`. Everything else goes into `contextImport`.
+
+This is the #1 onboarding gap — personality one-liners without the deep operating philosophy make a dumb agent.
 
 If a Telegram bot token is found (in .env or CCBot config), verify it immediately:
 ```bash
