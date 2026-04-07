@@ -36,7 +36,13 @@ If you find an Obsidian vault, read its CLAUDE.md. If you find Claude rules (`.c
 - Guardrails (when to intervene vs stay out of the way)
 - Time/energy preferences (what to protect, what to automate)
 
-Feed cognitive style, trigger phrases, and time/energy into the generator as `cognitiveStyle`, `triggerPhrases`, and `timeEnergy` fields. Feed spending limits as `spendingLimit`. Everything else goes into `contextImport`.
+Feed these into the generator JSON as pre-formatted markdown strings (with bullet points, tables, etc.):
+- `cognitiveStyle` — bullet list of how the user's brain works and how to present info
+- `triggerPhrases` — markdown table of phrase → meaning
+- `timeEnergy` — bullet list of what to protect vs automate
+- `spendingLimit` — dollar amount as a string, e.g. "$100"
+
+Commitment filters and delegation boundaries (deeply personal content) go into `contextImport`. The onboarding agent can also write them directly to `workspace/.claude/rules/` as hand-crafted rules files after the generator runs.
 
 This is the #1 onboarding gap — personality one-liners without the deep operating philosophy make a dumb agent.
 
