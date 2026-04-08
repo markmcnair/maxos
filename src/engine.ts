@@ -84,19 +84,53 @@ export async function oneShot(opts: OneShotOptions): Promise<string> {
   const args = buildOneShotArgs(opts);
   logger.info("engine:oneShot", { prompt: opts.prompt.slice(0, 100) });
 
-  try {
-    const { stdout } = await execFileAsync(CLAUDE_PATH, args, {
+  return new Promise<string>((resolve, reject) => {
+    const child = spawn(CLAUDE_PATH, args, {
       cwd: opts.cwd,
-      timeout: opts.timeout,
-      maxBuffer: 10 * 1024 * 1024,
       env: { ...process.env, TERM: "dumb", PATH: ENGINE_PATH },
+      stdio: ["ignore", "pipe", "pipe"],
     });
-    return stdout.trim();
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error("engine:oneShot:error", { error: msg });
-    throw err;
-  }
+
+    let stdout = "";
+    let stderr = "";
+    let killed = false;
+
+    child.stdout!.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+
+    // Graceful termination: SIGTERM first (allows bash cleanup traps to fire),
+    // then SIGKILL after 10s grace period.
+    const timer = setTimeout(() => {
+      killed = true;
+      logger.warn("engine:oneShot:timeout", { prompt: opts.prompt.slice(0, 50) });
+      child.kill("SIGTERM");
+      setTimeout(() => {
+        try { child.kill("SIGKILL"); } catch { /* already dead */ }
+      }, 10_000);
+    }, opts.timeout);
+
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (killed) {
+        const partial = stdout.trim();
+        if (partial) {
+          logger.info("engine:oneShot:partial", { length: partial.length });
+          resolve(partial);
+        } else {
+          reject(new Error(`oneShot timed out after ${opts.timeout}ms`));
+        }
+      } else if (code !== 0) {
+        reject(new Error(`oneShot exited with code ${code}: ${stderr.slice(0, 500)}`));
+      } else {
+        resolve(stdout.trim());
+      }
+    });
+
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
 }
 
 /** Queued message with its promise resolver */
@@ -120,12 +154,14 @@ interface QueuedMessage {
 export class InteractiveSession extends EventEmitter {
   private currentProcess: ChildProcess | null = null;
   private watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+  private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private _alive = false;
   private sessionId: string | null = null;
   private busy = false;
   private queue: QueuedMessage[] = [];
   private currentResolve: ((text: string) => void) | null = null;
   private currentReject: ((err: Error) => void) | null = null;
+  private accumulatedText = "";
 
   constructor(
     private readonly opts: InteractiveOptions & { cwd: string }
@@ -205,10 +241,11 @@ export class InteractiveSession extends EventEmitter {
     });
 
     this.resetWatchdog();
+    this.startProcessHeartbeat();
 
     let buffer = "";
     let resultText = "";
-    let assistantText = "";
+    this.accumulatedText = "";
     let gotResult = false;
 
     this.currentProcess.stdout!.on("data", (chunk: Buffer) => {
@@ -227,7 +264,7 @@ export class InteractiveSession extends EventEmitter {
               resultText = text;
               gotResult = true;
             } else {
-              assistantText += text;
+              this.accumulatedText += text;
             }
           });
         } catch {
@@ -237,15 +274,17 @@ export class InteractiveSession extends EventEmitter {
     });
 
     this.currentProcess.stderr!.on("data", (chunk: Buffer) => {
+      this.resetWatchdog(); // stderr activity means process is alive (tool progress, MCP connections)
       logger.warn("engine:interactive:stderr", { session: this.opts.sessionName, data: chunk.toString().slice(0, 200) });
     });
 
     this.currentProcess.on("close", (code) => {
       this.clearWatchdog();
+      this.stopProcessHeartbeat();
       this.busy = false;
       this.currentProcess = null;
 
-      const responseText = (gotResult ? resultText : assistantText).trim();
+      const responseText = (gotResult ? resultText : this.accumulatedText).trim();
       logger.info("engine:interactive:process_exit", { session: this.opts.sessionName, code, responseLen: responseText.length });
 
       // Resolve THIS message's promise
@@ -261,6 +300,7 @@ export class InteractiveSession extends EventEmitter {
 
     this.currentProcess.on("error", (err) => {
       this.clearWatchdog();
+      this.stopProcessHeartbeat();
       this.busy = false;
       this.currentProcess = null;
       logger.error("engine:interactive:error", { session: this.opts.sessionName, error: err.message });
@@ -320,6 +360,7 @@ export class InteractiveSession extends EventEmitter {
         for (const block of content) {
           if (block.type === "text" && typeof block.text === "string") {
             collectText(block.text, false);
+            this.emit("text", block.text); // Stream text to gateway for early ack delivery
           }
         }
       }
@@ -328,14 +369,22 @@ export class InteractiveSession extends EventEmitter {
 
   kill(): void {
     this.clearWatchdog();
+    this.stopProcessHeartbeat();
     this._alive = false;
 
-    // Reject all pending promises
-    if (this.currentReject) {
-      this.currentReject(new Error("Session killed"));
+    // Deliver accumulated partial response instead of discarding it
+    if (this.currentResolve) {
+      const partial = this.accumulatedText.trim();
+      if (partial) {
+        logger.info("engine:interactive:partial_delivery", { session: this.opts.sessionName, length: partial.length });
+        this.currentResolve(partial);
+      } else {
+        this.currentReject?.(new Error("Session killed"));
+      }
       this.currentResolve = null;
       this.currentReject = null;
     }
+    // Queued messages get rejected — no partial response exists for them
     for (const queued of this.queue) {
       queued.reject(new Error("Session killed"));
     }
@@ -360,6 +409,28 @@ export class InteractiveSession extends EventEmitter {
     if (this.watchdogTimer) {
       clearTimeout(this.watchdogTimer);
       this.watchdogTimer = null;
+    }
+  }
+
+  /** Periodically check if the child process is still alive (covers silent tool execution). */
+  private startProcessHeartbeat(): void {
+    this.stopProcessHeartbeat();
+    this.heartbeatInterval = setInterval(() => {
+      if (this.currentProcess?.pid) {
+        try {
+          process.kill(this.currentProcess.pid, 0); // signal 0 = existence check
+          this.resetWatchdog();
+        } catch {
+          // Process dead — watchdog will handle cleanup
+        }
+      }
+    }, 60_000);
+  }
+
+  private stopProcessHeartbeat(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
     }
   }
 }

@@ -60,7 +60,7 @@ export const DEFAULT_CONFIG: MaxOSConfig = {
     permissionMode: "bypassPermissions",
     allowedTools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "WebSearch", "WebFetch", "Agent", "mcp__*"],
     maxOneShotTimeout: 600_000,
-    watchdogTimeout: 600_000,
+    watchdogTimeout: 1_200_000,
     responseTimeout: 600_000,
   },
   channels: {},

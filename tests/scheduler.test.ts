@@ -59,6 +59,29 @@ describe("parseHeartbeat", () => {
     const tasks = parseHeartbeat(md);
     assert.equal(tasks[0].silent, false);
   });
+
+  it("parses [timeout:Nm] tag on headings", () => {
+    const md = "## 55 15 * * 0-5 [timeout:20m]\n- Run email triage";
+    const tasks = parseHeartbeat(md);
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0].cron, "55 15 * * 0-5");
+    assert.equal(tasks[0].timeout, 1_200_000);
+  });
+
+  it("parses both [silent] and [timeout:Nm] tags together", () => {
+    const md = "## Every 45 minutes [silent] [timeout:5m]\n- Quick checkpoint";
+    const tasks = parseHeartbeat(md);
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0].silent, true);
+    assert.equal(tasks[0].timeout, 300_000);
+    assert.equal(tasks[0].cron, "*/45 * * * *");
+  });
+
+  it("tasks without [timeout:Nm] have undefined timeout", () => {
+    const md = "## 0 6 * * 0-5\n- Run morning brief";
+    const tasks = parseHeartbeat(md);
+    assert.equal(tasks[0].timeout, undefined);
+  });
 });
 
 describe("isInProtectedWindow", () => {

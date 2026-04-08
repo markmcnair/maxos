@@ -42,7 +42,7 @@ export class Gateway {
       this.config.scheduler.maxConcurrentTasks,
       this.config.scheduler.circuitBreakerThreshold,
       this.config.scheduler.protectedWindows,
-      (prompt, taskName) => this.runOneShot(prompt, taskName),
+      (prompt, taskName, timeout) => this.runOneShot(prompt, taskName, timeout),
       (result, taskName) => this.deliverTaskResult(result, taskName),
       (msg) => this.alertUser(msg),
     );
@@ -354,6 +354,26 @@ export class Gateway {
       ? setInterval(() => { channel.sendTyping!(msg.conversationId).catch(() => {}); }, 4000)
       : null;
 
+    // Track early-delivered text so we don't double-send it with the final response
+    let earlyDeliveredLen = 0;
+    let firstTextSent = false;
+
+    const earlyTextHandler = async (text: string) => {
+      // Send the FIRST assistant text block immediately as an ack.
+      // Subsequent text blocks are part of the full response.
+      if (!firstTextSent && text.trim() && channel) {
+        firstTextSent = true;
+        earlyDeliveredLen = text.length;
+        try {
+          await channel.send(msg.conversationId, { text, format: "html" });
+        } catch {
+          earlyDeliveredLen = 0; // Failed to send — deliver everything in final response
+        }
+      }
+    };
+
+    session.on("text", earlyTextHandler);
+
     const prompt = await this.buildPrompt(msg);
     const responseTimeout = this.config.engine.responseTimeout ?? 600_000;
 
@@ -367,6 +387,7 @@ export class Gateway {
     const response = await Promise.race([sendPromise, timeoutPromise]);
 
     if (typingInterval) clearInterval(typingInterval);
+    session.removeListener("text", earlyTextHandler);
 
     if (response === "__TIMEOUT__") {
       // Tell user we're still working
@@ -376,11 +397,27 @@ export class Gateway {
       // The sendPromise is still pending — when it resolves, deliver as follow-up
       sendPromise.then((lateResponse) => {
         if (lateResponse.trim() && channel) {
-          channel.send(msg.conversationId, { text: lateResponse, format: "html" }).catch(() => {});
+          let finalText = lateResponse;
+          if (earlyDeliveredLen > 0) {
+            finalText = lateResponse.slice(earlyDeliveredLen).trim();
+          }
+          if (finalText) {
+            channel.send(msg.conversationId, { text: finalText, format: "html" }).catch(() => {});
+          }
         }
-      }).catch(() => {});
+        session.removeListener("text", earlyTextHandler);
+      }).catch(() => {
+        session.removeListener("text", earlyTextHandler);
+      });
     } else if (response.trim() && channel) {
-      await channel.send(msg.conversationId, { text: response, format: "html" });
+      // Strip already-delivered ack prefix from the final response
+      let finalText = response;
+      if (earlyDeliveredLen > 0) {
+        finalText = response.slice(earlyDeliveredLen).trim();
+      }
+      if (finalText) {
+        await channel.send(msg.conversationId, { text: finalText, format: "html" });
+      }
     }
 
     this.sessions.recordActivity(sessionName);
@@ -419,14 +456,14 @@ export class Gateway {
     return session;
   }
 
-  private async runOneShot(prompt: string, taskName: string): Promise<string> {
+  private async runOneShot(prompt: string, taskName: string, timeout?: number): Promise<string> {
     logger.info("gateway:oneshot", { task: taskName });
     return oneShot({
       prompt,
       cwd: join(MAXOS_HOME, "workspace"),
       model: this.config.engine.model,
       outputFormat: "text",
-      timeout: this.config.engine.maxOneShotTimeout,
+      timeout: timeout ?? this.config.engine.maxOneShotTimeout,
       permissionMode: this.config.engine.permissionMode,
       allowedTools: this.config.engine.allowedTools,
     });

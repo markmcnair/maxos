@@ -19,7 +19,7 @@ export interface ProtectedWindow {
   end?: string;
 }
 
-type TaskRunner = (prompt: string, taskName: string) => Promise<string>;
+type TaskRunner = (prompt: string, taskName: string, timeout?: number) => Promise<string>;
 type ResultDeliverer = (result: string, taskName: string) => Promise<void>;
 type AlertSender = (message: string) => Promise<void>;
 
@@ -29,6 +29,7 @@ export function parseHeartbeat(markdown: string): HeartbeatTask[] {
   let currentCron: string | null = null;
 
   let isSilent = false;
+  let customTimeout: number | undefined;
 
   for (const line of lines) {
     const headingMatch = line.match(/^##\s+(.+)/);
@@ -38,6 +39,11 @@ export function parseHeartbeat(markdown: string): HeartbeatTask[] {
       // Check for [silent] tag — task runs but output is not delivered to user
       isSilent = /\[silent\]/i.test(heading);
       heading = heading.replace(/\[silent\]/gi, "").trim();
+
+      // Check for [timeout:Nm] tag — custom timeout in minutes
+      const timeoutMatch = heading.match(/\[timeout:(\d+)m\]/i);
+      customTimeout = timeoutMatch ? parseInt(timeoutMatch[1]) * 60_000 : undefined;
+      heading = heading.replace(/\[timeout:\d+m\]/gi, "").trim();
 
       // "Every N minutes"
       const everyMinMatch = heading.match(/^Every\s+(\d+)\s+minutes?$/i);
@@ -75,7 +81,7 @@ export function parseHeartbeat(markdown: string): HeartbeatTask[] {
         .replace(/[^a-z0-9\s]/g, "")
         .replace(/\s+/g, "-")
         .slice(0, 50);
-      tasks.push({ name, cron: currentCron, prompt, silent: isSilent });
+      tasks.push({ name, cron: currentCron, prompt, silent: isSilent, timeout: customTimeout });
     }
   }
 
@@ -214,7 +220,7 @@ export class Scheduler {
 
     this.runningCount++;
     try {
-      const result = await this.runner(task.prompt, task.name);
+      const result = await this.runner(task.prompt, task.name, task.timeout);
       this.failures.set(task.name, 0);
       this.lastRun.set(task.name, Date.now());
 
