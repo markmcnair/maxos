@@ -230,6 +230,9 @@ export class Scheduler {
         });
       } else if (task.silent) {
         logger.info("scheduler:silent_complete", { task: task.name, resultLength: result.length });
+      } else if (!result.trim() && !task.silent) {
+        logger.warn("scheduler:empty_result", { task: task.name });
+        await this.alerter(`Task "${task.name}" completed but produced no output.`).catch(() => {});
       }
     } catch (err) {
       const count = (this.failures.get(task.name) ?? 0) + 1;
