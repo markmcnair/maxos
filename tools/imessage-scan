@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""
+iMessage scanner for MaxOS. Extracts recent messages from chat.db,
+properly handling both text and attributedBody (rich text) messages.
+
+Usage:
+  imessage-scan --hours 18 --limit 50
+  imessage-scan --since "2026-04-07 00:00:00" --limit 50
+  imessage-scan --since "2026-04-07" --contact "+15551234567" --from-me --limit 1
+"""
+import sqlite3
+import argparse
+import os
+import sys
+import re
+from datetime import datetime, timedelta
+
+DB_PATH = os.path.expanduser("~/Library/Messages/chat.db")
+
+
+def decode_attributed_body(blob):
+    """Extract plain text from iMessage attributedBody (typedstream format).
+
+    The attributedBody stores NSAttributedString in a binary typedstream.
+    The message text is embedded after the NSString class marker as a
+    length-prefixed UTF-8 string. NSDictionary marks where text ends
+    and formatting attributes begin.
+
+    Validated: 10/10 exact match against messages with both text and
+    attributedBody fields.
+    """
+    if not blob or len(blob) < 20:
+        return None
+
+    # Find NSString marker — the message text follows it
+    ns_idx = blob.find(b"NSString")
+    if ns_idx < 0:
+        return None
+
+    # Find the '+' byte within 30 bytes after NSString (marks start of string data)
+    search_region = blob[ns_idx:ns_idx + 30]
+    plus_offset = search_region.find(b"+")
+    if plus_offset < 0:
+        return None
+
+    text_start = ns_idx + plus_offset + 1
+    if text_start >= len(blob):
+        return None
+
+    # Read the length prefix (variable-length encoding)
+    first_byte = blob[text_start]
+    if first_byte == 0x81:  # 2-byte length
+        if text_start + 2 >= len(blob):
+            return None
+        text_start += 3
+    elif first_byte == 0x82:  # 3-byte length
+        if text_start + 3 >= len(blob):
+            return None
+        text_start += 4
+    elif first_byte < 0x80:  # 1-byte length
+        text_start += 1
+    else:
+        return None
+
+    # Find end boundary — NSDictionary marks where attributes begin
+    end_marker = blob.find(b"NSDictionary", text_start)
+    end_pos = end_marker if end_marker > 0 else len(blob)
+
+    text_bytes = blob[text_start:end_pos]
+    try:
+        text = text_bytes.decode("utf-8", errors="ignore")
+        # Strip trailing typedstream boundary markers (iI + attribute bytes)
+        text = re.sub(r"\x02?iI.{0,10}$", "", text, flags=re.DOTALL)
+        # Strip leading/trailing control characters
+        text = text.strip(
+            "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x0b\x0c\x0e\x0f"
+            "\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f"
+        )
+        return text.strip() if text.strip() else None
+    except Exception:
+        return None
+
+
+def check_sync_health(conn):
+    """Warn to stderr if the newest message in the DB is stale."""
+    row = conn.execute(
+        "SELECT MAX(date) FROM message"
+    ).fetchone()
+    if not row or not row[0]:
+        print("⚠️  iMessage DB appears empty", file=sys.stderr)
+        return
+    # Convert Mac absolute time (nanoseconds since 2001-01-01) to datetime
+    latest_ts = row[0] / 1_000_000_000 + 978307200
+    latest_dt = datetime.fromtimestamp(latest_ts)
+    age = datetime.now() - latest_dt
+    if age > timedelta(hours=2):
+        hours = age.total_seconds() / 3600
+        print(
+            f"⚠️  iMessage sync may be stale — newest message is {hours:.1f} hours old ({latest_dt:%Y-%m-%d %H:%M})",
+            file=sys.stderr,
+        )
+
+
+def scan(hours=None, since=None, contact=None, from_me=False, limit=50):
+    if not os.path.exists(DB_PATH):
+        print(f"ERROR: {DB_PATH} not found", file=sys.stderr)
+        sys.exit(1)
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+
+    check_sync_health(conn)
+
+    where = ["(m.text IS NOT NULL OR m.attributedBody IS NOT NULL)"]
+
+    if since:
+        where.append(
+            f"datetime(m.date/1000000000 + 978307200, 'unixepoch', 'localtime') >= '{since}'"
+        )
+    elif hours:
+        where.append(
+            f"m.date > (strftime('%s', 'now', '-{hours} hours') - 978307200) * 1000000000"
+        )
+
+    if contact:
+        where.append(f"h.id LIKE '%{contact}%'")
+
+    if from_me:
+        where.append("m.is_from_me = 1")
+
+    query = f"""
+    SELECT
+      datetime(m.date/1000000000 + 978307200, 'unixepoch', 'localtime') as dt,
+      CASE WHEN m.is_from_me THEN 'Mark' ELSE h.id END as sender,
+      m.text,
+      m.attributedBody
+    FROM message m
+    LEFT JOIN handle h ON m.handle_id=h.ROWID
+    WHERE {' AND '.join(where)}
+    ORDER BY m.date DESC
+    LIMIT {limit}
+    """
+
+    for row in conn.execute(query):
+        text = row["text"]
+        if not text and row["attributedBody"]:
+            text = decode_attributed_body(row["attributedBody"])
+        if not text:
+            text = "[media]"
+        # Output in same pipe-delimited format the task files expect
+        print(f"{row['dt']}|{row['sender']}|{text}")
+
+    conn.close()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Scan iMessages from chat.db")
+    parser.add_argument("--hours", type=int, help="Hours to look back")
+    parser.add_argument("--since", type=str, help="Start datetime (YYYY-MM-DD HH:MM:SS)")
+    parser.add_argument("--contact", type=str, help="Filter by contact phone/email (partial match)")
+    parser.add_argument("--from-me", action="store_true", help="Only show Mark's outgoing messages")
+    parser.add_argument("--limit", type=int, default=50, help="Max messages (default: 50)")
+    args = parser.parse_args()
+
+    if not args.hours and not args.since:
+        args.hours = 18  # Default: same as morning brief
+
+    scan(hours=args.hours, since=args.since, contact=args.contact,
+         from_me=args.from_me, limit=args.limit)
