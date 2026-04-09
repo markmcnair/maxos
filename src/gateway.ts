@@ -14,6 +14,25 @@ import { transcribeAudio } from "./utils/transcribe.js";
 
 const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".maxos");
 
+/**
+ * Strip early-delivered ack text from the final response to avoid duplication.
+ * Uses content-based matching instead of offset-based slicing — the "result"
+ * event from Claude CLI may contain only the last assistant turn (not all
+ * intermediate turns), so blind offset slicing truncates the response.
+ *
+ * If the response starts with the early text, strip it. Otherwise, deliver
+ * the full response — duplication is always preferable to truncation.
+ */
+export function stripEarlyDelivered(response: string, earlyText: string): string {
+  if (!earlyText) return response;
+  if (response.startsWith(earlyText)) {
+    return response.slice(earlyText.length).trim();
+  }
+  // Response doesn't start with the early text — different content (e.g.,
+  // result event has only the final turn). Deliver everything.
+  return response;
+}
+
 export class Gateway {
   private config: MaxOSConfig;
   private state: StateStore;
@@ -354,8 +373,12 @@ export class Gateway {
       ? setInterval(() => { channel.sendTyping!(msg.conversationId).catch(() => {}); }, 4000)
       : null;
 
-    // Track early-delivered text so we don't double-send it with the final response
-    let earlyDeliveredLen = 0;
+    // Track early-delivered text so we don't double-send it with the final response.
+    // We store the actual text content — NOT just the length — because the final
+    // "result" event from Claude CLI may contain only the last assistant turn,
+    // not all intermediate text blocks. Offset-based slicing on mismatched text
+    // causes truncation (e.g., slicing 100 chars off a different string).
+    let earlyDeliveredText = "";
     let firstTextSent = false;
 
     const earlyTextHandler = async (text: string) => {
@@ -363,11 +386,11 @@ export class Gateway {
       // Subsequent text blocks are part of the full response.
       if (!firstTextSent && text.trim() && channel) {
         firstTextSent = true;
-        earlyDeliveredLen = text.length;
+        earlyDeliveredText = text;
         try {
           await channel.send(msg.conversationId, { text, format: "html" });
         } catch {
-          earlyDeliveredLen = 0; // Failed to send — deliver everything in final response
+          earlyDeliveredText = ""; // Failed to send — deliver everything in final response
         }
       }
     };
@@ -397,24 +420,15 @@ export class Gateway {
       // The sendPromise is still pending — when it resolves, deliver as follow-up
       sendPromise.then((lateResponse) => {
         if (lateResponse.trim() && channel) {
-          let finalText = lateResponse;
-          if (earlyDeliveredLen > 0) {
-            finalText = lateResponse.slice(earlyDeliveredLen).trim();
-          }
+          const finalText = stripEarlyDelivered(lateResponse, earlyDeliveredText);
           if (finalText) {
             channel.send(msg.conversationId, { text: finalText, format: "html" }).catch(() => {});
           }
         }
-        session.removeListener("text", earlyTextHandler);
-      }).catch(() => {
-        session.removeListener("text", earlyTextHandler);
-      });
+      }).catch(() => {});
     } else if (response.trim() && channel) {
       // Strip already-delivered ack prefix from the final response
-      let finalText = response;
-      if (earlyDeliveredLen > 0) {
-        finalText = response.slice(earlyDeliveredLen).trim();
-      }
+      const finalText = stripEarlyDelivered(response, earlyDeliveredText);
       if (finalText) {
         await channel.send(msg.conversationId, { text: finalText, format: "html" });
       }
