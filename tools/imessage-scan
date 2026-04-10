@@ -101,7 +101,7 @@ def check_sync_health(conn):
         )
 
 
-def scan(hours=None, since=None, contact=None, from_me=False, limit=50):
+def scan(hours=None, since=None, contact=None, from_me=False, threads=False, limit=50):
     if not os.path.exists(DB_PATH):
         print(f"ERROR: {DB_PATH} not found", file=sys.stderr)
         sys.exit(1)
@@ -111,43 +111,104 @@ def scan(hours=None, since=None, contact=None, from_me=False, limit=50):
 
     check_sync_health(conn)
 
-    where = ["(m.text IS NOT NULL OR m.attributedBody IS NOT NULL)"]
+    # --threads mode: find ALL chats a contact is in, pull all messages from those chats
+    # This catches group chats, not just DMs. Essential for meeting prep.
+    if threads and contact:
+        chat_ids = [
+            row[0] for row in conn.execute(
+                """SELECT DISTINCT c.ROWID FROM chat c
+                   JOIN chat_handle_join chj ON c.ROWID = chj.chat_id
+                   JOIN handle h ON chj.handle_id = h.ROWID
+                   WHERE h.id LIKE ?""",
+                (f"%{contact}%",),
+            )
+        ]
+        if not chat_ids:
+            print(f"No threads found for {contact}", file=sys.stderr)
+            conn.close()
+            return
 
-    if since:
-        where.append(
-            f"datetime(m.date/1000000000 + 978307200, 'unixepoch', 'localtime') >= '{since}'"
-        )
-    elif hours:
-        where.append(
-            f"m.date > (strftime('%s', 'now', '-{hours} hours') - 978307200) * 1000000000"
-        )
+        # Print thread summary to stderr so the caller knows what was found
+        for cid in chat_ids:
+            info = conn.execute(
+                """SELECT c.display_name,
+                   (SELECT COUNT(*) FROM chat_message_join WHERE chat_id=c.ROWID) as cnt,
+                   (SELECT GROUP_CONCAT(h2.id, ', ') FROM chat_handle_join chj2
+                    JOIN handle h2 ON chj2.handle_id=h2.ROWID WHERE chj2.chat_id=c.ROWID) as members
+                   FROM chat c WHERE c.ROWID=?""",
+                (cid,),
+            ).fetchone()
+            name = info["display_name"] or "unnamed group"
+            print(f"Thread: {name} ({info['cnt']} msgs) — {info['members']}", file=sys.stderr)
 
-    if contact:
-        where.append(f"h.id LIKE '%{contact}%'")
+        placeholders = ",".join("?" * len(chat_ids))
+        where = [
+            f"cmj.chat_id IN ({placeholders})",
+            "(m.text IS NOT NULL OR m.attributedBody IS NOT NULL)",
+        ]
+        params = list(chat_ids)
 
-    if from_me:
-        where.append("m.is_from_me = 1")
+        if since:
+            where.append(f"datetime(m.date/1000000000 + 978307200, 'unixepoch', 'localtime') >= ?")
+            params.append(since)
+        elif hours:
+            where.append(f"m.date > (strftime('%s', 'now', '-{hours} hours') - 978307200) * 1000000000")
 
-    query = f"""
-    SELECT
-      datetime(m.date/1000000000 + 978307200, 'unixepoch', 'localtime') as dt,
-      CASE WHEN m.is_from_me THEN 'Mark' ELSE h.id END as sender,
-      m.text,
-      m.attributedBody
-    FROM message m
-    LEFT JOIN handle h ON m.handle_id=h.ROWID
-    WHERE {' AND '.join(where)}
-    ORDER BY m.date DESC
-    LIMIT {limit}
-    """
+        if from_me:
+            where.append("m.is_from_me = 1")
 
-    for row in conn.execute(query):
+        query = f"""
+        SELECT
+          datetime(m.date/1000000000 + 978307200, 'unixepoch', 'localtime') as dt,
+          CASE WHEN m.is_from_me THEN 'Mark' ELSE h.id END as sender,
+          m.text, m.attributedBody
+        FROM message m
+        JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
+        LEFT JOIN handle h ON m.handle_id=h.ROWID
+        WHERE {' AND '.join(where)}
+        ORDER BY m.date DESC
+        LIMIT {limit}
+        """
+        rows = conn.execute(query, params).fetchall()
+
+    else:
+        # Standard mode: search by handle directly
+        where = ["(m.text IS NOT NULL OR m.attributedBody IS NOT NULL)"]
+
+        if since:
+            where.append(
+                f"datetime(m.date/1000000000 + 978307200, 'unixepoch', 'localtime') >= '{since}'"
+            )
+        elif hours:
+            where.append(
+                f"m.date > (strftime('%s', 'now', '-{hours} hours') - 978307200) * 1000000000"
+            )
+
+        if contact:
+            where.append(f"h.id LIKE '%{contact}%'")
+
+        if from_me:
+            where.append("m.is_from_me = 1")
+
+        query = f"""
+        SELECT
+          datetime(m.date/1000000000 + 978307200, 'unixepoch', 'localtime') as dt,
+          CASE WHEN m.is_from_me THEN 'Mark' ELSE h.id END as sender,
+          m.text, m.attributedBody
+        FROM message m
+        LEFT JOIN handle h ON m.handle_id=h.ROWID
+        WHERE {' AND '.join(where)}
+        ORDER BY m.date DESC
+        LIMIT {limit}
+        """
+        rows = conn.execute(query).fetchall()
+
+    for row in rows:
         text = row["text"]
         if not text and row["attributedBody"]:
             text = decode_attributed_body(row["attributedBody"])
         if not text:
             text = "[media]"
-        # Output in same pipe-delimited format the task files expect
         print(f"{row['dt']}|{row['sender']}|{text}")
 
     conn.close()
@@ -158,6 +219,8 @@ if __name__ == "__main__":
     parser.add_argument("--hours", type=int, help="Hours to look back")
     parser.add_argument("--since", type=str, help="Start datetime (YYYY-MM-DD HH:MM:SS)")
     parser.add_argument("--contact", type=str, help="Filter by contact phone/email (partial match)")
+    parser.add_argument("--threads", action="store_true",
+                        help="Find ALL chats a contact is in (DMs + groups) and pull messages from all of them. Use with --contact.")
     parser.add_argument("--from-me", action="store_true", help="Only show Mark's outgoing messages")
     parser.add_argument("--limit", type=int, default=50, help="Max messages (default: 50)")
     args = parser.parse_args()
@@ -166,4 +229,4 @@ if __name__ == "__main__":
         args.hours = 18  # Default: same as morning brief
 
     scan(hours=args.hours, since=args.since, contact=args.contact,
-         from_me=args.from_me, limit=args.limit)
+         threads=args.threads, from_me=args.from_me, limit=args.limit)
