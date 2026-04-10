@@ -32,6 +32,8 @@ export class TelegramAdapter implements ChannelAdapter {
   private handler: ((msg: InboundMessage) => void) | null = null;
   private healthy = false;
   private config: TelegramConfig | null = null;
+  /** Dedup guard: track recent sends to prevent duplicate messages from concurrent handlers. */
+  private recentSends: Map<string, { text: string; ts: number }> = new Map();
 
   async connect(config: ChannelConfig): Promise<void> {
     this.config = config as TelegramConfig;
@@ -305,6 +307,23 @@ export class TelegramAdapter implements ChannelAdapter {
     content: OutboundMessage,
   ): Promise<void> {
     if (!this.bot) throw new Error("Telegram not connected");
+
+    // Dedup guard: skip exact duplicate messages sent within 5 seconds.
+    // Catches concurrent handler race conditions in the gateway's early-ack system.
+    const dedupKey = conversationId;
+    const recent = this.recentSends.get(dedupKey);
+    if (recent && content.text === recent.text && Date.now() - recent.ts < 5000) {
+      logger.info("telegram:dedup_skipped", { conversationId, textLen: content.text.length });
+      return;
+    }
+    this.recentSends.set(dedupKey, { text: content.text, ts: Date.now() });
+    // Clean old entries every 100 sends to prevent unbounded growth
+    if (this.recentSends.size > 100) {
+      const cutoff = Date.now() - 10_000;
+      for (const [k, v] of this.recentSends) {
+        if (v.ts < cutoff) this.recentSends.delete(k);
+      }
+    }
 
     const [type, id] = conversationId.split(":");
     // For DMs, id is the user's chat ID — works directly.

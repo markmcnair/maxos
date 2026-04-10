@@ -395,6 +395,11 @@ export class Gateway {
       }
     };
 
+    // Remove any stale text handlers from previous messages before registering.
+    // Without this, concurrent messages on the same session stack handlers —
+    // each handler has its own firstTextSent=false, so the same text event
+    // triggers multiple sends, causing duplicate Telegram messages.
+    session.removeAllListeners("text");
     session.on("text", earlyTextHandler);
 
     const prompt = await this.buildPrompt(msg);
