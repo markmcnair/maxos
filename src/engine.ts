@@ -76,6 +76,7 @@ export function buildOneShotArgs(opts: OneShotOptions): string[] {
     "--model", opts.model,
     "--output-format", opts.outputFormat,
     "--permission-mode", opts.permissionMode,
+    "--allow-dangerously-skip-permissions",
     "--allowed-tools", opts.allowedTools.join(","),
   ];
 }
@@ -224,6 +225,7 @@ export class InteractiveSession extends EventEmitter {
       "--output-format", "stream-json",
       "--verbose",
       "--permission-mode", this.opts.permissionMode,
+      "--allow-dangerously-skip-permissions",
       "--allowed-tools", this.opts.allowedTools.join(","),
     ];
 
