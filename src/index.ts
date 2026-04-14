@@ -97,13 +97,17 @@ async function runPreflight(): Promise<void> {
   }
 
   // 4. Unload old launchd scheduled tasks (macOS only)
+  // NOTE: Excludes com.maxos.daemon.plist — that's OUR launch agent, don't unload it.
+  // Only kill OLD/legacy ccbot agents and any other stale com.maxos.* entries.
   if (platform() === "darwin") {
     try {
       const agents = execSync("ls ~/Library/LaunchAgents/ 2>/dev/null", { encoding: "utf-8" });
       for (const line of agents.split("\n")) {
-        if (/^com\.(maxos|ccbot)\./.test(line.trim())) {
+        const name = line.trim();
+        if (name === "com.maxos.daemon.plist") continue; // Never unload self
+        if (/^com\.(maxos|ccbot)\./.test(name)) {
           try {
-            execSync(`launchctl unload ~/Library/LaunchAgents/${line.trim()} 2>/dev/null`, { stdio: "pipe" });
+            execSync(`launchctl unload ~/Library/LaunchAgents/${name} 2>/dev/null`, { stdio: "pipe" });
           } catch {}
         }
       }
