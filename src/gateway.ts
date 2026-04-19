@@ -12,6 +12,7 @@ import type { ChannelAdapter, InboundMessage } from "./channels/adapter.js";
 import { logger, enableConsoleLogging } from "./utils/logger.js";
 import { transcribeAudio } from "./utils/transcribe.js";
 import { consumeRestartMarker } from "./restart-marker.js";
+import { buildMemoryContext } from "./memory.js";
 
 const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".maxos");
 
@@ -528,9 +529,21 @@ export class Gateway {
   }
 
   private async runOneShot(prompt: string, taskName: string, timeout?: number): Promise<string> {
-    logger.info("gateway:oneshot", { task: taskName });
+    // Inject recent memory context before spawning the one-shot. Every task
+    // starts a fresh Claude session, so without this, yesterday's "I handled
+    // that" slips out of context and the debrief re-raises the same loop.
+    const memoryContext = await buildMemoryContext(prompt).catch(() => "");
+    const finalPrompt = memoryContext
+      ? `${memoryContext}\n\n---\n\n${prompt}`
+      : prompt;
+
+    logger.info("gateway:oneshot", {
+      task: taskName,
+      memoryChars: memoryContext.length,
+    });
+
     return oneShot({
-      prompt,
+      prompt: finalPrompt,
       cwd: join(MAXOS_HOME, "workspace"),
       model: this.config.engine.model,
       outputFormat: "text",
