@@ -11,6 +11,7 @@ import { TelegramAdapter } from "./channels/telegram.js";
 import type { ChannelAdapter, InboundMessage } from "./channels/adapter.js";
 import { logger, enableConsoleLogging } from "./utils/logger.js";
 import { transcribeAudio } from "./utils/transcribe.js";
+import { consumeRestartMarker } from "./restart-marker.js";
 
 const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".maxos");
 
@@ -31,6 +32,36 @@ export function stripEarlyDelivered(response: string, earlyText: string): string
   // Response doesn't start with the early text — different content (e.g.,
   // result event has only the final turn). Deliver everything.
   return response;
+}
+
+/**
+ * Poll the given channels until at least one is healthy or the timeout elapses.
+ * Returns the first healthy channel, or null on timeout.
+ *
+ * Rationale: Telegram's `bot.start()` is fire-and-forget (see telegram.ts), so
+ * `connect()` resolves before the polling loop is actually up. Any `alertUser`
+ * call that fires immediately after startup would silently drop because no
+ * channel reported healthy yet.
+ */
+export async function waitForHealthyChannel(
+  channels: ChannelAdapter[],
+  timeoutMs: number,
+): Promise<ChannelAdapter | null> {
+  const POLL_INTERVAL_MS = 50;
+  const deadline = Date.now() + timeoutMs;
+  // Check once up-front so already-healthy channels return immediately.
+  do {
+    for (const ch of channels) {
+      if (ch.isHealthy()) return ch;
+    }
+    if (Date.now() >= deadline) return null;
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+  } while (Date.now() < deadline);
+  // Final check after the last sleep.
+  for (const ch of channels) {
+    if (ch.isHealthy()) return ch;
+  }
+  return null;
 }
 
 export class Gateway {
@@ -84,8 +115,13 @@ export class Gateway {
 
     await this.startChannels();
 
-    // Notify user if last shutdown was a crash
-    if (!wasClean && lastShutdown) {
+    // User-requested restart (via `maxos restart`) takes precedence over the
+    // crash-detection path: if the user asked for the restart, confirm it's
+    // done rather than reporting a "crash" just because shutdown couldn't drain.
+    const restartMarker = consumeRestartMarker(MAXOS_HOME);
+    if (restartMarker) {
+      await this.alertUser("Restart complete. I'm back online.").catch(() => {});
+    } else if (!wasClean && lastShutdown) {
       const crashTime = new Date(lastShutdown.ts).toLocaleTimeString();
       await this.alertUser(`Restarted after a crash (last clean event: ${lastShutdown.event} at ${crashTime}). All systems back online.`).catch(() => {});
     }
@@ -540,21 +576,25 @@ export class Gateway {
   }
 
   private async alertUser(message: string): Promise<void> {
-    for (const channel of this.channels) {
-      if (channel.isHealthy()) {
-        const routing = this.config.sessions.routing.find((r) => r.default);
-        if (routing) {
-          try {
-            await channel.send(`dm:${this.config.channels.telegram?.allowedUsers[0] ?? "unknown"}`, {
-              text: message,
-              format: "text",
-            });
-            return;
-          } catch {
-            // Try next channel
-          }
-        }
-      }
+    // Wait up to 15s for a channel to come online. startup path calls this
+    // immediately after `startChannels()`, but Telegram's polling loop is
+    // fire-and-forget — without this wait, startup alerts silently drop.
+    const channel = await waitForHealthyChannel(this.channels, 15_000);
+    if (!channel) {
+      logger.warn("gateway:alert_user:no_healthy_channel");
+      return;
+    }
+    const routing = this.config.sessions.routing.find((r) => r.default);
+    if (!routing) return;
+    try {
+      await channel.send(`dm:${this.config.channels.telegram?.allowedUsers[0] ?? "unknown"}`, {
+        text: message,
+        format: "text",
+      });
+    } catch (err) {
+      logger.warn("gateway:alert_user:send_failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

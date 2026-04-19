@@ -10,6 +10,7 @@ import { parseHeartbeat } from "./scheduler.js";
 import { oneShot } from "./engine.js";
 import { loadConfig } from "./config.js";
 import { parseTimeToTimestamp } from "./utils/time.js";
+import { writeRestartMarker } from "./restart-marker.js";
 
 const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".maxos");
 const HEALTH_URL = "http://127.0.0.1:18790/health";
@@ -196,6 +197,12 @@ program
   .description("Stop and restart the MaxOS daemon")
   .action(async () => {
     try {
+      // Drop a marker before killing so the next boot knows this restart was
+      // intentional and can tell the user "Restart complete" instead of
+      // reporting a crash (shutdowns that time out the drain get SIGKILL'd
+      // and look identical to a crash in the journal).
+      writeRestartMarker(MAXOS_HOME, "user-requested");
+
       const { execSync } = await import("node:child_process");
       // Kill existing daemon by port
       try {
