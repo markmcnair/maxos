@@ -16,6 +16,23 @@ Read `~/Projects/maxos/.claude/skills/onboard.md` and follow every instruction i
 
 Help with whatever the user needs. Read `~/Projects/maxos/docs/design-spec.md` for architecture.
 
+## Two directories — know the split
+
+MaxOS is deliberately split across two locations. Confusing them is the #1 cause of "I made a change and nothing happened."
+
+| Directory | Contains | Public? | You work here when… |
+|---|---|---|---|
+| `~/Projects/maxos` | Source code, tests, build output, docs | **Yes** — GitHub repo `markmcnair/maxos` | Fixing bugs, adding features, upgrading how Max *works* |
+| `~/.maxos` | Personal data: `workspace/` (memory, SOUL.md, HEARTBEAT.md, tasks/), `maxos.json` (bot tokens), `state.json`, logs, `crash.log` | **No** — local only | Tuning *what* Max does: schedules, personality, tasks, user config |
+
+**The running daemon reads code from `~/Projects/maxos/dist/` and stores everything personal in `~/.maxos`.** Launchd enforces this: `ProgramArguments` points at the project dist, `WorkingDirectory` + `MAXOS_HOME` both point at `~/.maxos`.
+
+Consequences:
+- Code fix workflow: edit in `~/Projects/maxos/src/`, `npm run build`, restart daemon — it picks up the new code automatically (no copying).
+- Config/task tweaks: edit in `~/.maxos/workspace/` — no rebuild, no restart usually needed (HEARTBEAT.md hot-reloads).
+- Never commit `~/.maxos` contents to the repo. They're in a different directory entirely; `.gitignore` is the belt to that suspenders.
+- If you're asked to "fix how the scheduler works" → Projects/maxos. If asked to "add a 7am task" → ~/.maxos/workspace/HEARTBEAT.md.
+
 ## Trigger Words
 
 Any of these mean treat as FRESH regardless of workspace state:
