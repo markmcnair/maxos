@@ -43,6 +43,22 @@ export function stripEarlyDelivered(response: string, earlyText: string): string
  * call that fires immediately after startup would silently drop because no
  * channel reported healthy yet.
  */
+/**
+ * Truncate a scheduled task's output for inclusion in the daily markdown journal.
+ *
+ * Cuts at the next newline at or after `maxChars` (falling back to a raw cut if
+ * no newline exists after that point). The newline-snap matters: a mid-row cut
+ * inside a markdown table produces an invalid row that breaks the Notion sync
+ * with "Number of cells in table row must match the table width of the parent
+ * table" errors.
+ */
+export function summarizeForJournal(result: string, maxChars: number): string {
+  if (result.length <= maxChars) return result;
+  const cutIdx = result.indexOf("\n", maxChars);
+  const cutAt = cutIdx > 0 ? cutIdx : maxChars;
+  return result.slice(0, cutAt).trimEnd() + "\n\n…(truncated, full output sent to Telegram)";
+}
+
 export async function waitForHealthyChannel(
   channels: ChannelAdapter[],
   timeoutMs: number,
@@ -557,10 +573,7 @@ export class Gateway {
       const memoryDir = join(MAXOS_HOME, "workspace", "memory");
       const journalPath = join(memoryDir, `${dateStr}.md`);
 
-      // Truncate result to first ~500 chars for the journal (full output went to Telegram)
-      const summary = result.length > 500
-        ? result.slice(0, 500).trimEnd() + "..."
-        : result;
+      const summary = summarizeForJournal(result, 2000);
 
       const entry = `\n\n### ${taskName} (${timeStr})\n${summary}\n`;
 
