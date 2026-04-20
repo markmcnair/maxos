@@ -1,0 +1,117 @@
+[
+  {
+    "title": "First conversation",
+    "create_time": 1733000000.0,
+    "conversation_id": "conv-1",
+    "mapping": {
+      "root": { "id": "root", "message": null, "parent": null, "children": ["sys1"] },
+      "sys1": {
+        "id": "sys1",
+        "message": {
+          "id": "sys1",
+          "author": { "role": "system" },
+          "create_time": 1733000000.0,
+          "content": { "content_type": "text", "parts": ["The user provided the following information about themselves. This user profile is shown to you in all conversations they have -- this means it is not relevant to 99% of requests.\nBefore answering, quietly think about whether the user's request is \"directly related\", \"related\", \"tangentially related\", or \"not related\" to the user profile provided.\n\nHere are the user's custom instructions:\n- I am Jane Doe, a product manager at a SaaS company.\n- I prefer concise, bulleted answers.\n- When writing code, use TypeScript and prefer functional patterns.\n- I'm based in Austin, TX, Central Time."] }
+        },
+        "parent": "root",
+        "children": ["u1"]
+      },
+      "u1": {
+        "id": "u1",
+        "message": {
+          "id": "u1",
+          "author": { "role": "user" },
+          "create_time": 1733000010.0,
+          "content": { "content_type": "text", "parts": ["Hello"] }
+        },
+        "parent": "sys1",
+        "children": ["a1"]
+      },
+      "a1": {
+        "id": "a1",
+        "message": {
+          "id": "a1",
+          "author": { "role": "assistant" },
+          "create_time": 1733000020.0,
+          "content": { "content_type": "text", "parts": ["Hi Jane"] }
+        },
+        "parent": "u1",
+        "children": []
+      }
+    },
+    "current_node": "a1"
+  },
+  {
+    "title": "Second conversation",
+    "create_time": 1733100000.0,
+    "conversation_id": "conv-2",
+    "mapping": {
+      "root": { "id": "root", "message": null, "parent": null, "children": ["sys2"] },
+      "sys2": {
+        "id": "sys2",
+        "message": {
+          "id": "sys2",
+          "author": { "role": "system" },
+          "create_time": 1733100000.0,
+          "content": { "content_type": "text", "parts": ["The user provided the following information about themselves. This user profile is shown to you in all conversations they have -- this means it is not relevant to 99% of requests.\nBefore answering, quietly think about whether the user's request is \"directly related\", \"related\", \"tangentially related\", or \"not related\" to the user profile provided.\n\nHere are the user's custom instructions:\n- I am Jane Doe, a product manager at a SaaS company.\n- I prefer concise, bulleted answers.\n- When writing code, use TypeScript and prefer functional patterns.\n- I'm based in Austin, TX, Central Time."] }
+        },
+        "parent": "root",
+        "children": ["u2"]
+      },
+      "u2": {
+        "id": "u2",
+        "message": {
+          "id": "u2",
+          "author": { "role": "user" },
+          "create_time": 1733100010.0,
+          "content": { "content_type": "text", "parts": ["Pricing strategy question"] }
+        },
+        "parent": "sys2",
+        "children": ["a2"]
+      },
+      "a2": {
+        "id": "a2",
+        "message": {
+          "id": "a2",
+          "author": { "role": "assistant" },
+          "create_time": 1733100020.0,
+          "content": { "content_type": "text", "parts": ["Sure, here are bullet points..."] }
+        },
+        "parent": "u2",
+        "children": []
+      }
+    },
+    "current_node": "a2"
+  },
+  {
+    "title": "No custom instructions on this one",
+    "create_time": 1733200000.0,
+    "conversation_id": "conv-3",
+    "mapping": {
+      "root": { "id": "root", "message": null, "parent": null, "children": ["u3"] },
+      "u3": {
+        "id": "u3",
+        "message": {
+          "id": "u3",
+          "author": { "role": "user" },
+          "create_time": 1733200000.0,
+          "content": { "content_type": "text", "parts": ["Simple question"] }
+        },
+        "parent": "root",
+        "children": ["a3"]
+      },
+      "a3": {
+        "id": "a3",
+        "message": {
+          "id": "a3",
+          "author": { "role": "assistant" },
+          "create_time": 1733200010.0,
+          "content": { "content_type": "text", "parts": ["Simple answer"] }
+        },
+        "parent": "u3",
+        "children": []
+      }
+    },
+    "current_node": "a3"
+  }
+]

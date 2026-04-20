@@ -51,6 +51,54 @@ If a Telegram bot token is found (in .env or CCBot config), verify it immediatel
 curl -s "https://api.telegram.org/bot<TOKEN>/getMe"
 ```
 
+## Source detection — ask before going deeper
+
+After the pre-flight scan, ask ONE question in natural language before the workspace-existence branching:
+
+> "Before we go deeper — where are you coming from? (a) **ChatGPT** — I'll pull in your conversation history so Max remembers everything, (b) **Google Gemini / Bard**, (c) **Experienced Claude Code / Obsidian / OpenClaw** user, (d) **New to AI** — I'll explain as we go, or (e) **something else**, tell me briefly."
+
+Wait for their answer. Branch based on their response:
+
+### If (a) ChatGPT
+Walk them through the export — **always in plain language, never tell them to open a terminal**:
+
+1. "Open a new browser tab, go to **ChatGPT → your profile (bottom-left) → Settings → Data Controls → Export Data → Confirm export**. Google will email you a link within ~5-15 minutes. Download the ZIP from the email."
+2. When they say they have it: "Drag it into our chat here, or tell me the full path (something like `/Users/you/Downloads/chatgpt-*.zip`)."
+3. Once you have the path, import it silently:
+   ```bash
+   cd ~/Projects/maxos && npx tsx scripts/import-chatgpt.ts "<PATH_TO_ZIP>" 2>&1 | tail -10
+   ```
+4. Report back: "Imported N conversations covering [earliest-month] to [latest-month]. They're indexed — try asking Max later 'what did I ask ChatGPT about X?' and you'll get a hit from years ago."
+5. Continue with the rest of onboarding (identity if no workspace, otherwise Phase 1).
+
+**If the export hasn't arrived yet and user wants to proceed:** note it as a follow-up. Tell them: "When the email shows up, drop the ZIP path in chat and I'll import it. No pressure." Continue setup in parallel.
+
+### If (b) Gemini / Bard
+Google's Takeout export for Gemini is HTML-based, not JSON — auto-import is not wired up yet. Offer this:
+
+> "Google's export is HTML per conversation — the auto-parser for it is still baking. For now, two options: (1) I can help you import a few specific conversations by copy-paste, or (2) we skip import, set up Max, and I manually pull over your favorites when you remember them. Which?"
+
+Continue with the rest of onboarding either way.
+
+### If (c) Experienced Claude Code / Obsidian / OpenClaw
+Pre-flight scan already covered the auto-detection. Just confirm what was found:
+
+> "I found your [Obsidian vault at X / OpenClaw config at Y / Claude rules at Z]. I'll port those over in a minute. Anything else on this machine worth knowing about?"
+
+Continue with the rest of onboarding. The standard Pre-Flight + Phase 2 flow handles it.
+
+### If (d) New to AI
+Extra hand-holding. Say something like:
+
+> "Cool — couple things you should know so the rest of setup makes sense. Max is an AI that lives in your messaging apps (Telegram, and iMessage if you use Mac). Unlike ChatGPT, Max can actually DO stuff on a schedule — send you a brief at 6am, triage your email at 4pm, stuff like that. The setup here is basically: tell Max who you are, connect the apps you want, pick what you want automated. 10-15 min total. I'll walk you through each step — no commands, no terminal, just answers."
+
+Then continue with identity collection at a slower pace. Check in frequently: "Still with me?" / "Any of that confusing?"
+
+### If (e) Something else
+> "Ok tell me briefly — what have you been using? That'll help me know what to carry over."
+
+If they mention a specific tool, note it. Continue with standard onboarding.
+
 ### If workspace already exists (init was run)
 
 Read `~/.maxos/workspace/SOUL.md` and `~/.maxos/workspace/USER.md` to understand the agent's identity and user profile. Confirm briefly:

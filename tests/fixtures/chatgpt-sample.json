@@ -1,0 +1,150 @@
+[
+  {
+    "title": "Brainstorming product names",
+    "create_time": 1732982400.0,
+    "update_time": 1732983000.0,
+    "conversation_id": "11111111-aaaa-bbbb-cccc-111111111111",
+    "default_model_slug": "gpt-4o",
+    "is_archived": false,
+    "mapping": {
+      "root": {
+        "id": "root",
+        "message": null,
+        "parent": null,
+        "children": ["msg1"]
+      },
+      "msg1": {
+        "id": "msg1",
+        "message": {
+          "id": "msg1",
+          "author": { "role": "user" },
+          "create_time": 1732982400.0,
+          "content": { "content_type": "text", "parts": ["Help me brainstorm names for a coffee subscription."] }
+        },
+        "parent": "root",
+        "children": ["msg2"]
+      },
+      "msg2": {
+        "id": "msg2",
+        "message": {
+          "id": "msg2",
+          "author": { "role": "assistant" },
+          "create_time": 1732982460.0,
+          "content": { "content_type": "text", "parts": ["Here are ten: BrewCrate, DailyGrind, MorningMug..."] }
+        },
+        "parent": "msg1",
+        "children": ["msg3"]
+      },
+      "msg3": {
+        "id": "msg3",
+        "message": {
+          "id": "msg3",
+          "author": { "role": "user" },
+          "create_time": 1732982520.0,
+          "content": { "content_type": "text", "parts": ["I like BrewCrate. Can you riff on that?"] }
+        },
+        "parent": "msg2",
+        "children": ["msg4"]
+      },
+      "msg4": {
+        "id": "msg4",
+        "message": {
+          "id": "msg4",
+          "author": { "role": "assistant" },
+          "create_time": 1732982580.0,
+          "content": { "content_type": "text", "parts": ["BrewCrate, CrateBrew, BrewVault..."] }
+        },
+        "parent": "msg3",
+        "children": []
+      }
+    },
+    "current_node": "msg4"
+  },
+  {
+    "title": "Untitled conversation",
+    "create_time": 1733000000.0,
+    "update_time": 1733000060.0,
+    "conversation_id": "22222222-aaaa-bbbb-cccc-222222222222",
+    "default_model_slug": "gpt-4o",
+    "is_archived": false,
+    "mapping": {
+      "root": {
+        "id": "root",
+        "message": null,
+        "parent": null,
+        "children": ["ma"]
+      },
+      "ma": {
+        "id": "ma",
+        "message": {
+          "id": "ma",
+          "author": { "role": "system" },
+          "create_time": 1733000000.0,
+          "content": { "content_type": "text", "parts": [""] }
+        },
+        "parent": "root",
+        "children": ["mb"]
+      },
+      "mb": {
+        "id": "mb",
+        "message": {
+          "id": "mb",
+          "author": { "role": "user" },
+          "create_time": 1733000030.0,
+          "content": { "content_type": "text", "parts": ["What's the capital of France?"] }
+        },
+        "parent": "ma",
+        "children": ["mc"]
+      },
+      "mc": {
+        "id": "mc",
+        "message": {
+          "id": "mc",
+          "author": { "role": "assistant" },
+          "create_time": 1733000060.0,
+          "content": { "content_type": "text", "parts": ["Paris."] }
+        },
+        "parent": "mb",
+        "children": []
+      }
+    },
+    "current_node": "mc"
+  },
+  {
+    "title": "Branching conversation (only main path kept)",
+    "create_time": 1733100000.0,
+    "update_time": 1733100180.0,
+    "conversation_id": "33333333-aaaa-bbbb-cccc-333333333333",
+    "default_model_slug": "gpt-4o",
+    "is_archived": false,
+    "mapping": {
+      "root": { "id": "root", "message": null, "parent": null, "children": ["u1"] },
+      "u1": {
+        "id": "u1",
+        "message": { "id": "u1", "author": { "role": "user" }, "create_time": 1733100000.0, "content": { "content_type": "text", "parts": ["Hello"] } },
+        "parent": "root", "children": ["a1", "a2"]
+      },
+      "a1": {
+        "id": "a1",
+        "message": { "id": "a1", "author": { "role": "assistant" }, "create_time": 1733100030.0, "content": { "content_type": "text", "parts": ["Hi — this is the REGENERATED branch (should NOT appear)"] } },
+        "parent": "u1", "children": []
+      },
+      "a2": {
+        "id": "a2",
+        "message": { "id": "a2", "author": { "role": "assistant" }, "create_time": 1733100060.0, "content": { "content_type": "text", "parts": ["Hi there! This is the KEPT branch."] } },
+        "parent": "u1", "children": ["u2"]
+      },
+      "u2": {
+        "id": "u2",
+        "message": { "id": "u2", "author": { "role": "user" }, "create_time": 1733100120.0, "content": { "content_type": "text", "parts": ["Great, thanks."] } },
+        "parent": "a2", "children": ["a3"]
+      },
+      "a3": {
+        "id": "a3",
+        "message": { "id": "a3", "author": { "role": "assistant" }, "create_time": 1733100180.0, "content": { "content_type": "text", "parts": ["You're welcome."] } },
+        "parent": "u2", "children": []
+      }
+    },
+    "current_node": "a3"
+  }
+]

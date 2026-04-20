@@ -35,6 +35,12 @@ Clone https://github.com/markmcnair/maxos and set me up
 
 Claude clones the repo, finds your tools, ports your existing automations, and starts the daemon. You just talk to it.
 
+### Coming from ChatGPT, Gemini, or new to AI?
+
+Before pasting the line above, go to **ChatGPT → Settings → Data Controls → Export Data** and click confirm. Google emails you a ZIP within ~15 minutes. When setup asks where you're coming from, say "ChatGPT" and hand over the ZIP — your entire conversation history imports into Max's semantic memory. You can later ask things like *"What did I ask ChatGPT about pricing last year?"* and get an answer pulled from months of history.
+
+Gemini exports are HTML-only today — setup will walk you through a manual option. New to AI entirely? Setup detects that and shifts into a slower, explanation-heavy mode. No terminal, no commands — you answer questions, Max does the rest.
+
 <details>
 <summary>Manual setup</summary>
 
