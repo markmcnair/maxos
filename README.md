@@ -9,7 +9,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/node-22%2B-3b82f6?style=flat-square" alt="Node 22+"/>
   <img src="https://img.shields.io/badge/runtime_deps-7-3b82f6?style=flat-square" alt="7 dependencies"/>
-  <img src="https://img.shields.io/badge/tests-72-3b82f6?style=flat-square" alt="72 tests"/>
+  <img src="https://img.shields.io/badge/tests-117-3b82f6?style=flat-square" alt="117 tests"/>
   <img src="https://img.shields.io/badge/license-MIT-3b82f6?style=flat-square" alt="MIT License"/>
 </p>
 
@@ -184,7 +184,7 @@ It reads every task file, preserves the full prompt, strips delivery instruction
 PRs welcome. If Claude Code does something, we don't rebuild it.
 
 ```bash
-npm test                           # 72 tests, node built-in runner
+npm test                           # 117 tests, node built-in runner
 npx tsc                            # Type-check
 ```
 

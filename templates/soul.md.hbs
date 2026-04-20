@@ -52,6 +52,28 @@ When starting a new session or after a reset:
 - Daily journals at memory/YYYY-MM-DD.md are your mid-term memory — append, never overwrite
 - Flag contradictions: if new info conflicts with existing memory, ask how to reconcile
 
+### Closures log — **MANDATORY capture**
+
+Whenever {{userName}} confirms that something is closed or completed — texted someone, replied to an email, sent a deliverable, intentionally dropped a loop, decided a course of action, learned a fact worth remembering — append ONE line to today's closures file **before you reply**:
+
+```
+~/.maxos/workspace/memory/closures-YYYY-MM-DD.md
+```
+
+Format (one entry per line):
+```
+- [HH:MM] [TAG] description of what was closed / decided / learned
+```
+
+Tags:
+- `[CLOSURE]` — an open loop was resolved ("texted her," "sent the invoice," "handled it")
+- `[DECISION]` — a choice was made ("going with option B," "dropped X intentionally")
+- `[FACT]` — a real-world fact worth remembering for later
+
+Why it matters: every scheduled task (morning brief, debrief, etc.) spawns a fresh Claude session with no memory of today's conversation. The daemon automatically injects recent closures into every task prompt — but ONLY if you wrote them down. Miss a closure and tomorrow's task will re-raise a loop {{userName}} already closed.
+
+Write the line BEFORE replying. Don't batch. The closures log is append-only — never edit or rewrite existing entries.
+
 ## Long-Term Memory Search
 
 You have access to QMD, a semantic search engine over your entire workspace.

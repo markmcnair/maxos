@@ -17,6 +17,27 @@ MaxOS uses a three-tier memory architecture to give the agent continuity across 
 - **PreCompact hook** fires a prompt telling Claude to write a thorough summary to today's daily journal (Tier 2). Key decisions, in-progress tasks, commitments, current topic -- everything the future session needs to continue.
 - **PostCompact hook** runs a shell script that re-injects critical operating rules into the fresh context.
 
+## Tier 1.5: Task Memory Injection (Bridge)
+
+**What:** Automatic memory prefix prepended to every scheduled-task prompt before the one-shot Claude process spawns.
+
+**Where:** `src/memory.ts` — `buildMemoryContext()`. Called by `Gateway.runOneShot()` in `src/gateway.ts`.
+
+**Lifespan:** Composed fresh on every task invocation.
+
+**Why it exists:** Each scheduled task (morning brief, debrief, etc.) spawns a new Claude one-shot that doesn't inherit the interactive session's context. Without this bridge, the debrief at 4:35pm has no way to know the user texted someone at 4:20pm — it would re-raise that contact as ghosted. Task Memory Injection gives every one-shot the short-term context the interactive session accumulated.
+
+**Four layers composed into `## Recent Memory Context`:**
+
+1. **Today's closures** — contents of `memory/closures-YYYY-MM-DD.md` (append-only, written by the interactive session per SOUL.md rule)
+2. **Yesterday's closures** — relevant for morning briefs / handoffs across days
+3. **Dropped-loops** — `memory/dropped-loops.md` entries the user has explicitly retired
+4. **QMD BM25 hits** — top-5 keyword matches against the task prompt, via `qmd search --json` (~500ms)
+
+All four layers are optional. If the vault is empty or QMD is unavailable, `buildMemoryContext()` returns `""` and `runOneShot` falls through with the unmodified prompt. Any failure (missing binary, timeout, parse error) is swallowed silently — task execution never blocks on memory lookup.
+
+**Why not Tier 3 (QMD vector search)?** Vector + rerank takes ~12 seconds per call. BM25 keyword (`qmd search`) is ~500ms. Interactive messages still use Tier 3 for deep semantic recall; tasks use Tier 1.5 because they fire on schedule and can't wait.
+
 ## Tier 2: Workspace Files (Warm)
 
 **What:** Structured Markdown files in the workspace directory.
@@ -36,11 +57,12 @@ MaxOS uses a three-tier memory architecture to give the agent continuity across 
 
 ### Daily Journals
 
-Three write mechanisms keep journals current:
+Four write mechanisms keep journals current:
 
 1. **Periodic checkpoint** (HEARTBEAT.md, e.g. every 45 min) -- A one-shot task reads the current journal and appends a brief update. Keeps entries under 200 words.
 2. **Pre-compaction flush** (PreCompact hook) -- Thorough summary written before context is lost.
 3. **Session-end summary** (Stop hook) -- Wrap-up written when a conversation naturally ends.
+4. **Closures log** (`memory/closures-YYYY-MM-DD.md`) -- Append-only file the interactive session writes to when the user confirms a closure, decision, or fact. SOUL.md instructs the agent to capture these in real time. Consumed by the daemon's task-memory injection (see Tier 1.5 below).
 
 ### Session Start Protocol
 
