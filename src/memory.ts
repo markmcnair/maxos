@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { buildSystemFacts, formatSystemFacts } from "./system-facts.js";
 import { buildCalendarBrief } from "./calendar-brief.js";
 import { reconcileAllLoops, formatLoopReconciliation } from "./loop-reconciler.js";
+import { buildRelationshipKit } from "./relationship-kit.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -39,7 +40,7 @@ export interface BuildMemoryOptions {
  * Return type: which task kit, if any, a task name maps to.
  * Extracted so the mapping is explicit and testable.
  */
-export function classifyTaskKit(taskName: string | undefined): "morning-brief" | "shutdown-debrief" | null {
+export function classifyTaskKit(taskName: string | undefined): "morning-brief" | "shutdown-debrief" | "weekly-relationship-review" | null {
   if (!taskName) return null;
   const lower = taskName.toLowerCase();
   if (lower.includes("morning-brief") || lower.includes("morning_brief") || lower.includes("morningbrief")) {
@@ -47,6 +48,9 @@ export function classifyTaskKit(taskName: string | undefined): "morning-brief" |
   }
   if (lower.includes("shutdown-debrief") || lower.includes("shutdown_debrief") || lower.includes("shutdowndebrief")) {
     return "shutdown-debrief";
+  }
+  if (lower.includes("weekly-relationship-review") || lower.includes("weeklyrelationship") || lower.includes("relationship-review") || lower.includes("relationshipreview")) {
+    return "weekly-relationship-review";
   }
   return null;
 }
@@ -220,29 +224,32 @@ export async function buildMemoryContext(
   }
 
   // Task-specific deterministic kits. Morning brief → today's calendar;
-  // shutdown debrief → tomorrow's calendar. All attendee resolution is
-  // deterministic (code looks up dossiers by name), so the one-shot can't
-  // hallucinate "Mike Salem" for "Mark y Mark".
+  // shutdown debrief → tomorrow's calendar + loop reconciliation;
+  // weekly-relationship-review → relationship kit (touchpoint refresh +
+  // overdue classification). All attendee / loop / touchpoint resolution
+  // is deterministic so the one-shot can't hallucinate.
   const kit = classifyTaskKit(options.taskName);
-  if (kit && !options.skipCalendarBrief) {
-    const briefKitCfg = readBriefKitConfig(maxosHome);
-    if (briefKitCfg && briefKitCfg.calendars.length > 0) {
-      const daysOffset = kit === "morning-brief" ? 0 : 1;
-      const dateISO = dateISOForOffset(now, daysOffset);
-      const tzOffset = tzOffsetString(now);
-      const vaultRoot = join(maxosHome, "vault");
-      try {
-        const calBrief = await buildCalendarBrief({
-          calendarIds: briefKitCfg.calendars,
-          dateISO,
-          tzOffset,
-          vaultRoot,
-          userFirstName: briefKitCfg.userFirstName,
-          gwsPath: briefKitCfg.gwsWrapper,
-        });
-        if (calBrief) sections.push(calBrief);
-      } catch {
-        // Calendar fetch failures don't block the rest of memory injection.
+  if (kit === "morning-brief" || kit === "shutdown-debrief") {
+    if (!options.skipCalendarBrief) {
+      const briefKitCfg = readBriefKitConfig(maxosHome);
+      if (briefKitCfg && briefKitCfg.calendars.length > 0) {
+        const daysOffset = kit === "morning-brief" ? 0 : 1;
+        const dateISO = dateISOForOffset(now, daysOffset);
+        const tzOffset = tzOffsetString(now);
+        const vaultRoot = join(maxosHome, "vault");
+        try {
+          const calBrief = await buildCalendarBrief({
+            calendarIds: briefKitCfg.calendars,
+            dateISO,
+            tzOffset,
+            vaultRoot,
+            userFirstName: briefKitCfg.userFirstName,
+            gwsPath: briefKitCfg.gwsWrapper,
+          });
+          if (calBrief) sections.push(calBrief);
+        } catch {
+          // Calendar fetch failures don't block the rest of memory injection.
+        }
       }
     }
 
@@ -255,6 +262,17 @@ export async function buildMemoryContext(
       if (loopBlock) sections.push(loopBlock);
     } catch {
       // Loop reconciliation is best-effort; failures don't block memory.
+    }
+  }
+
+  if (kit === "weekly-relationship-review") {
+    // Refresh last_touchpoint on all phone-having dossiers, classify each
+    // by orbit cadence, and emit a deterministic kit the task must trust.
+    try {
+      const rkit = await buildRelationshipKit({ maxosHome, now });
+      if (rkit) sections.push(rkit);
+    } catch {
+      // Best-effort.
     }
   }
 
