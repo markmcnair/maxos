@@ -13,6 +13,7 @@ import { logger, enableConsoleLogging } from "./utils/logger.js";
 import { transcribeAudio } from "./utils/transcribe.js";
 import { consumeRestartMarker } from "./restart-marker.js";
 import { buildMemoryContext } from "./memory.js";
+import { buildSystemFacts, formatSystemFacts } from "./system-facts.js";
 
 const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".maxos");
 
@@ -118,6 +119,24 @@ export class Gateway {
   async start(): Promise<void> {
     logger.info("gateway:starting", { home: MAXOS_HOME });
     this.state.load();
+
+    // Write deterministic system facts to disk so the interactive session's
+    // @SYSTEM_FACTS.md import always reflects current runtime (model, paths,
+    // start time). Stops the agent from asserting facts about itself from
+    // training-data priors.
+    try {
+      const facts = buildSystemFacts({ maxosHome: MAXOS_HOME });
+      const factsPath = join(MAXOS_HOME, "workspace", "SYSTEM_FACTS.md");
+      const factsMd = formatSystemFacts(facts);
+      // require fs.writeFileSync at top of file; use appendFileSync exists
+      const { writeFileSync: writeF, mkdirSync: mkd } = await import("node:fs");
+      mkd(join(MAXOS_HOME, "workspace"), { recursive: true });
+      writeF(factsPath, factsMd);
+    } catch (err) {
+      logger.warn("gateway:system_facts_write_failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     // Detect non-clean shutdown from crash journal
     const lastShutdown = this.state.getLastJournalEvent();
@@ -532,7 +551,9 @@ export class Gateway {
     // Inject recent memory context before spawning the one-shot. Every task
     // starts a fresh Claude session, so without this, yesterday's "I handled
     // that" slips out of context and the debrief re-raises the same loop.
-    const memoryContext = await buildMemoryContext(prompt).catch(() => "");
+    // Passing taskName enables task-specific deterministic kits (calendar
+    // brief for morning-brief/shutdown-debrief).
+    const memoryContext = await buildMemoryContext(prompt, { taskName }).catch(() => "");
     const finalPrompt = memoryContext
       ? `${memoryContext}\n\n---\n\n${prompt}`
       : prompt;

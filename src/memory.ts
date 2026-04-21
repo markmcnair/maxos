@@ -3,6 +3,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
+import { buildSystemFacts, formatSystemFacts } from "./system-facts.js";
+import { buildCalendarBrief } from "./calendar-brief.js";
+import { reconcileAllLoops, formatLoopReconciliation } from "./loop-reconciler.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -26,6 +29,45 @@ export interface BuildMemoryOptions {
   qmdTimeoutMs?: number;
   /** Max chars for QMD-injected snippets section. */
   qmdMaxChars?: number;
+  /** Task name if running as a scheduled one-shot — triggers task-specific kits. */
+  taskName?: string;
+  /** Skip calendar-brief fetch (tests). */
+  skipCalendarBrief?: boolean;
+}
+
+/**
+ * Return type: which task kit, if any, a task name maps to.
+ * Extracted so the mapping is explicit and testable.
+ */
+export function classifyTaskKit(taskName: string | undefined): "morning-brief" | "shutdown-debrief" | null {
+  if (!taskName) return null;
+  const lower = taskName.toLowerCase();
+  if (lower.includes("morning-brief") || lower.includes("morning_brief") || lower.includes("morningbrief")) {
+    return "morning-brief";
+  }
+  if (lower.includes("shutdown-debrief") || lower.includes("shutdown_debrief") || lower.includes("shutdowndebrief")) {
+    return "shutdown-debrief";
+  }
+  return null;
+}
+
+/** Date string YYYY-MM-DD in local time, offset by `daysOffset` from `now`. */
+function dateISOForOffset(now: Date, daysOffset: number): string {
+  const d = new Date(now);
+  d.setDate(d.getDate() + daysOffset);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** Current local TZ offset as +HH:MM / -HH:MM. */
+function tzOffsetString(now: Date): string {
+  const off = -now.getTimezoneOffset();
+  const sign = off >= 0 ? "+" : "-";
+  const hh = String(Math.floor(Math.abs(off) / 60)).padStart(2, "0");
+  const mm = String(Math.abs(off) % 60).padStart(2, "0");
+  return `${sign}${hh}:${mm}`;
 }
 
 /**
@@ -152,6 +194,11 @@ export async function buildMemoryContext(
 
   const sections: string[] = [];
 
+  // System facts first — what model, what time, what paths. Always injected.
+  // Fixes hallucinations where the agent asserts facts about its own runtime
+  // from training-data priors ("I'm running Opus 4.6") instead of checking.
+  sections.push(formatSystemFacts(buildSystemFacts({ maxosHome })));
+
   const today = readClosuresFile(maxosHome, now);
   if (today) sections.push(`### Today's closures (facts Mark confirmed today)\n${today}`);
 
@@ -172,7 +219,69 @@ export async function buildMemoryContext(
     }
   }
 
+  // Task-specific deterministic kits. Morning brief → today's calendar;
+  // shutdown debrief → tomorrow's calendar. All attendee resolution is
+  // deterministic (code looks up dossiers by name), so the one-shot can't
+  // hallucinate "Mike Salem" for "Mark y Mark".
+  const kit = classifyTaskKit(options.taskName);
+  if (kit && !options.skipCalendarBrief) {
+    const briefKitCfg = readBriefKitConfig(maxosHome);
+    if (briefKitCfg && briefKitCfg.calendars.length > 0) {
+      const daysOffset = kit === "morning-brief" ? 0 : 1;
+      const dateISO = dateISOForOffset(now, daysOffset);
+      const tzOffset = tzOffsetString(now);
+      const vaultRoot = join(maxosHome, "vault");
+      try {
+        const calBrief = await buildCalendarBrief({
+          calendarIds: briefKitCfg.calendars,
+          dateISO,
+          tzOffset,
+          vaultRoot,
+          userFirstName: briefKitCfg.userFirstName,
+          gwsPath: briefKitCfg.gwsWrapper,
+        });
+        if (calBrief) sections.push(calBrief);
+      } catch {
+        // Calendar fetch failures don't block the rest of memory injection.
+      }
+    }
+
+    // Loop reconciliation — check sent messages for evidence that tracked
+    // open loops have been closed. Deterministic: code runs the scan, not
+    // the LLM, so resolved loops can't be re-raised in the debrief.
+    try {
+      const loopResult = await reconcileAllLoops(maxosHome);
+      const loopBlock = formatLoopReconciliation(loopResult);
+      if (loopBlock) sections.push(loopBlock);
+    } catch {
+      // Loop reconciliation is best-effort; failures don't block memory.
+    }
+  }
+
   if (sections.length === 0) return "";
 
-  return `## Recent Memory Context\n\n${sections.join("\n\n")}`;
+  return sections.join("\n\n");
+}
+
+interface BriefKitConfig {
+  calendars: string[];
+  userFirstName: string;
+  gwsWrapper: string;
+}
+
+function readBriefKitConfig(maxosHome: string): BriefKitConfig | null {
+  const path = join(maxosHome, "maxos.json");
+  if (!existsSync(path)) return null;
+  try {
+    const cfg = JSON.parse(readFileSync(path, "utf-8"));
+    const bk = cfg?.briefKit;
+    if (!bk || !Array.isArray(bk.calendars) || bk.calendars.length === 0) return null;
+    return {
+      calendars: bk.calendars.filter((x: unknown): x is string => typeof x === "string"),
+      userFirstName: typeof bk.userFirstName === "string" ? bk.userFirstName : "",
+      gwsWrapper: typeof bk.gwsWrapper === "string" ? bk.gwsWrapper : "gws-personal",
+    };
+  } catch {
+    return null;
+  }
 }

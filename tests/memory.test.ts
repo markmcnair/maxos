@@ -129,13 +129,15 @@ describe("buildMemoryContext", () => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  it("returns empty string when there's no memory content available", async () => {
+  it("always includes system facts even when no workspace content exists", async () => {
     const ctx = await buildMemoryContext("morning brief task", {
       maxosHome: home,
       now: new Date("2026-04-19T06:00:00"),
       skipQmd: true,
     });
-    assert.equal(ctx, "");
+    // System facts are ALWAYS injected so the agent can't hallucinate model/paths
+    assert.ok(ctx.includes("## System Facts"));
+    assert.ok(ctx.includes("trust these"));
   });
 
   it("includes today's closures file when present", async () => {
@@ -148,7 +150,7 @@ describe("buildMemoryContext", () => {
       now: new Date("2026-04-19T18:00:00"),
       skipQmd: true,
     });
-    assert.ok(ctx.includes("## Recent Memory Context"));
+    assert.ok(ctx.includes("### Today's closures"));
     assert.ok(ctx.includes("Jessica"));
   });
 
