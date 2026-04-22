@@ -16,6 +16,8 @@ import { buildMemoryContext } from "./memory.js";
 import { buildSystemFacts, formatSystemFacts } from "./system-facts.js";
 import { loadDroppedTopics, stripDroppedFromOutput, pruneOpenLoopsAgainstDropped } from "./dropped-loops-filter.js";
 import { loadOpenLoops, saveOpenLoops } from "./loop-reconciler.js";
+import { fetchAuthoritativeGhosted, stripInvalidGhosted } from "./ghosted-filter.js";
+import { classifyTaskKit } from "./memory.js";
 
 const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".maxos");
 
@@ -616,20 +618,48 @@ export class Gateway {
       allowedTools: this.config.engine.allowedTools,
     });
 
-    // Deterministic post-processing: strip any bullet under "Open Loops"
-    // or "Top 3" that references a dropped-loops topic. The LLM sometimes
-    // violates the "do not re-raise dropped loops" prompt rule; this is
-    // the enforcement layer the prompt can't bypass.
+    // Deterministic post-processing layer. Each filter is targeted at a
+    // specific section of the output where the LLM has historically
+    // ignored prompt directives. The filters can't prevent the LLM from
+    // GENERATING bad content — they remove bad content before delivery.
+    let filtered = rawResult;
+
+    // Filter 1: dropped-loops enforcement (all tasks).
     const droppedTopics = loadDroppedTopics(MAXOS_HOME);
-    if (droppedTopics.length === 0) return rawResult;
-    const filtered = stripDroppedFromOutput(rawResult, droppedTopics);
-    if (filtered !== rawResult) {
-      logger.info("gateway:oneshot:dropped_filter_applied", {
-        task: taskName,
-        droppedTopicsCount: droppedTopics.length,
-        bytesRemoved: rawResult.length - filtered.length,
-      });
+    if (droppedTopics.length > 0) {
+      const afterDropped = stripDroppedFromOutput(filtered, droppedTopics);
+      if (afterDropped !== filtered) {
+        logger.info("gateway:oneshot:dropped_filter_applied", {
+          task: taskName,
+          droppedTopicsCount: droppedTopics.length,
+          bytesRemoved: filtered.length - afterDropped.length,
+        });
+        filtered = afterDropped;
+      }
     }
+
+    // Filter 2: ghosted authority enforcement (brief + debrief only).
+    // Fetch authoritative --ghosted list and strip any Ghosted-section
+    // bullet that doesn't match. Catches false-carries like the Miguel
+    // case where the LLM kept someone from yesterday's ghosted list
+    // even though today's scan shows the thread is active.
+    const kit = classifyTaskKit(taskName);
+    if (kit === "morning-brief" || kit === "shutdown-debrief") {
+      const authoritative = await fetchAuthoritativeGhosted({
+        maxosHome: MAXOS_HOME,
+        hours: kit === "morning-brief" ? 24 : 24,
+      }).catch(() => []);
+      const afterGhosted = stripInvalidGhosted(filtered, authoritative);
+      if (afterGhosted !== filtered) {
+        logger.info("gateway:oneshot:ghosted_filter_applied", {
+          task: taskName,
+          authoritativeCount: authoritative.length,
+          bytesRemoved: filtered.length - afterGhosted.length,
+        });
+        filtered = afterGhosted;
+      }
+    }
+
     return filtered;
   }
 
