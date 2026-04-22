@@ -7,6 +7,7 @@ import { buildSystemFacts, formatSystemFacts } from "./system-facts.js";
 import { buildCalendarBrief } from "./calendar-brief.js";
 import { reconcileAllLoops, formatLoopReconciliation } from "./loop-reconciler.js";
 import { buildRelationshipKit } from "./relationship-kit.js";
+import { loadAuthoritativeRules, formatAuthoritativeRules, defaultExtraSourceDirs } from "./authoritative-rules.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -202,6 +203,15 @@ export async function buildMemoryContext(
   // Fixes hallucinations where the agent asserts facts about its own runtime
   // from training-data priors ("I'm running Opus 4.6") instead of checking.
   sections.push(formatSystemFacts(buildSystemFacts({ maxosHome })));
+
+  // Authoritative rules second — feedback_*.md rules Mark has captured
+  // after previous mistakes. These override anything in CLAUDE.md / SOUL.md
+  // if they conflict. Critical: the one-shot `claude -p` spawn does NOT
+  // traverse the Claude Code auto-memory system, so these rules would
+  // otherwise be invisible during scheduled tasks.
+  const rules = loadAuthoritativeRules(maxosHome, defaultExtraSourceDirs(maxosHome));
+  const rulesBlock = formatAuthoritativeRules(rules);
+  if (rulesBlock) sections.push(rulesBlock);
 
   const today = readClosuresFile(maxosHome, now);
   if (today) sections.push(`### Today's closures (facts Mark confirmed today)\n${today}`);
