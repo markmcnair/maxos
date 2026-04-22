@@ -4,3 +4,4 @@ dist/
 *.log
 state.json
 .DS_Store
+.worktrees/
