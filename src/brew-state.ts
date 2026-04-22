@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 
 export interface Breadcrumb {
@@ -50,15 +50,19 @@ export function emptyState(): BrewState {
 }
 
 export function readBrewState(path: string): BrewState {
-  if (!existsSync(path)) return emptyState();
-  const raw = readFileSync(path, "utf-8");
-  const parsed = JSON.parse(raw);
-  return { ...emptyState(), ...parsed };
+  try {
+    return { ...emptyState(), ...JSON.parse(readFileSync(path, "utf-8")) };
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyState();
+    throw err;
+  }
 }
 
 export function writeBrewState(path: string, state: BrewState): void {
+  const tmp = `${path}.tmp`;
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(state, null, 2));
+  writeFileSync(tmp, JSON.stringify(state, null, 2));
+  renameSync(tmp, path);
 }
 
 export function advanceBreadcrumb(state: BrewState, delivered: Breadcrumb): BrewState {
