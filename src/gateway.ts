@@ -14,6 +14,8 @@ import { transcribeAudio } from "./utils/transcribe.js";
 import { consumeRestartMarker } from "./restart-marker.js";
 import { buildMemoryContext } from "./memory.js";
 import { buildSystemFacts, formatSystemFacts } from "./system-facts.js";
+import { loadDroppedTopics, stripDroppedFromOutput, pruneOpenLoopsAgainstDropped } from "./dropped-loops-filter.js";
+import { loadOpenLoops, saveOpenLoops } from "./loop-reconciler.js";
 
 const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".maxos");
 
@@ -119,6 +121,28 @@ export class Gateway {
   async start(): Promise<void> {
     logger.info("gateway:starting", { home: MAXOS_HOME });
     this.state.load();
+
+    // Prune open-loops.json against dropped-loops.md on startup. Keeps the
+    // structured loop store consistent with Mark's explicit retirements so
+    // Loop Reconciliation never surfaces a retired item.
+    try {
+      const dropped = loadDroppedTopics(MAXOS_HOME);
+      if (dropped.length > 0) {
+        const loops = loadOpenLoops(MAXOS_HOME);
+        const { remaining, pruned } = pruneOpenLoopsAgainstDropped(loops, dropped);
+        if (pruned.length > 0) {
+          saveOpenLoops(MAXOS_HOME, remaining);
+          logger.info("gateway:pruned_dropped_loops", {
+            pruned: pruned.map((p) => p.id),
+            remainingCount: remaining.length,
+          });
+        }
+      }
+    } catch (err) {
+      logger.warn("gateway:prune_failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     // Write deterministic system facts to disk so the interactive session's
     // @SYSTEM_FACTS.md import always reflects current runtime (model, paths,
@@ -582,7 +606,7 @@ export class Gateway {
       memoryChars: memoryContext.length,
     });
 
-    return oneShot({
+    const rawResult = await oneShot({
       prompt: finalPrompt,
       cwd: join(MAXOS_HOME, "workspace"),
       model: this.config.engine.model,
@@ -591,6 +615,22 @@ export class Gateway {
       permissionMode: this.config.engine.permissionMode,
       allowedTools: this.config.engine.allowedTools,
     });
+
+    // Deterministic post-processing: strip any bullet under "Open Loops"
+    // or "Top 3" that references a dropped-loops topic. The LLM sometimes
+    // violates the "do not re-raise dropped loops" prompt rule; this is
+    // the enforcement layer the prompt can't bypass.
+    const droppedTopics = loadDroppedTopics(MAXOS_HOME);
+    if (droppedTopics.length === 0) return rawResult;
+    const filtered = stripDroppedFromOutput(rawResult, droppedTopics);
+    if (filtered !== rawResult) {
+      logger.info("gateway:oneshot:dropped_filter_applied", {
+        task: taskName,
+        droppedTopicsCount: droppedTopics.length,
+        bytesRemoved: rawResult.length - filtered.length,
+      });
+    }
+    return filtered;
   }
 
   private async deliverTaskResult(result: string, taskName: string): Promise<void> {
