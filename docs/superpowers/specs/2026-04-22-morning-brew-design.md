@@ -54,7 +54,7 @@ Pairing:
 One small change to `src/channels/telegram.ts`: when an inbound message has `reply_to_message`, append one JSONL line to `~/.maxos/workspace/memory/telegram-replies.jsonl`:
 
 ```json
-{"ts":1714000000000,"msgId":"67890","replyToId":"12345","from":"mark","body":"A"}
+{"ts":1714000000000,"msgId":"67890","replyToId":"12345","conversationId":"dm:mark","body":"A"}
 ```
 
 Tomorrow's brew reads this log to find Mark's reply to yesterday's brew. Deterministic bridge across fresh task sessions.

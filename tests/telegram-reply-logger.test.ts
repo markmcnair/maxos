@@ -31,6 +31,7 @@ describe("logTelegramReply", () => {
     assert.equal(parsed.replyToId, "m1");
     assert.equal(parsed.body, "A");
     assert.equal(parsed.ts, 1714000000000);
+    assert.equal(parsed.conversationId, "dm:mark");
   });
 
   it("does NOT write when replyToId is absent", () => {

@@ -184,7 +184,7 @@ export class TelegramAdapter implements ChannelAdapter {
     };
 
     try {
-      const logPath = join(homedir(), ".maxos", "workspace", "memory", "telegram-replies.jsonl");
+      const logPath = join(MAXOS_HOME, "workspace", "memory", "telegram-replies.jsonl");
       logTelegramReply(
         {
           messageId: String(ctx.message.message_id),
