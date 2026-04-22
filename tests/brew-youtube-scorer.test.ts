@@ -62,4 +62,19 @@ describe("meetsQualityBar", () => {
     );
     assert.equal(pass, false);
   });
+
+  it("rejects videos with like ratio below 0.9%", () => {
+    const pass = meetsQualityBar(
+      {
+        views: 10_000_000,
+        likes: 50_000,         // 0.5% — below the 0.9% threshold
+        subscribers: 500_000,  // 20× view:sub — clears that bar
+        durationSec: 600,
+        uploadDate: "20260301",
+        title: "x",
+      },
+      new Date("2026-04-22"),
+    );
+    assert.equal(pass, false);
+  });
 });

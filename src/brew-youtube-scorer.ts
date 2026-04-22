@@ -75,7 +75,7 @@ export function meetsQualityBar(m: VideoMetrics, today: Date): boolean {
 
 export async function fetchMetrics(videoUrl: string): Promise<VideoMetrics> {
   const fmt = "%(view_count)s\t%(like_count)s\t%(channel_follower_count)s\t%(duration)s\t%(upload_date)s\t%(title)s";
-  const { stdout } = await execFileAsync("/opt/homebrew/bin/yt-dlp", [
+  const { stdout } = await execFileAsync("yt-dlp", [
     "--print", fmt,
     "--skip-download",
     "--no-warnings",
