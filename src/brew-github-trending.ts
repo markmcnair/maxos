@@ -17,9 +17,10 @@ export function parseTrendingHtml(html: string): TrendingRepo[] {
   let match;
   while ((match = articleRegex.exec(html)) !== null) {
     const block = match[1];
-    const hrefMatch = block.match(/<a\s+href="\/([^"]+)"/);
+    const hrefMatch = block.match(/<h2[^>]*>[\s\S]*?<a[^>]*href="\/([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)"/);
     if (!hrefMatch) continue;
     const slug = hrefMatch[1].trim();
+    if (slug.startsWith("sponsors/")) continue;
     const descMatch = block.match(/<p[^>]*class="col-9[^"]*"[^>]*>([\s\S]*?)<\/p>/);
     const description = descMatch ? stripTags(descMatch[1]).trim() : "";
     const starsMatch = block.match(/([\d,]+)\s+stars? today/);
@@ -47,7 +48,13 @@ export async function fetchTrending(): Promise<TrendingRepo[]> {
   });
   if (!res.ok) throw new Error(`github trending fetch failed: ${res.status}`);
   const html = await res.text();
-  return parseTrendingHtml(html);
+  const repos = parseTrendingHtml(html);
+  const slugShape = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
+  const bad = repos.filter(r => !slugShape.test(r.slug));
+  if (bad.length > 0) {
+    throw new Error(`github trending: unexpected slug format (${bad[0].slug}) — HTML structure may have changed`);
+  }
+  return repos;
 }
 
 function stripTags(s: string): string {

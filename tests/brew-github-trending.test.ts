@@ -7,6 +7,7 @@ describe("parseTrendingHtml", () => {
     const html = `
       <article class="Box-row">
         <h2 class="h3 lh-condensed">
+          <a href="/login?return_to=%2Fuser%2Frepo" rel="nofollow">Sign in to star</a>
           <a href="/user/repo">
             <span>user</span> / <span>repo</span>
           </a>
@@ -21,6 +22,26 @@ describe("parseTrendingHtml", () => {
     assert.equal(repos[0].url, "https://github.com/user/repo");
     assert.equal(repos[0].description, "Awesome LLM agent toolkit.");
     assert.equal(repos[0].starsToday, 1234);
+  });
+
+  it("skips articles that only have login-redirect or sponsors links", () => {
+    const html = `
+      <article class="Box-row">
+        <h2 class="h3 lh-condensed">
+          <a href="/login?return_to=%2Fonly%2Flogin">Only login</a>
+        </h2>
+        <p class="col-9 color-fg-muted my-1 pr-4">LLM agent toolkit.</p>
+        <span class="d-inline-block float-sm-right">1,234 stars today</span>
+      </article>
+      <article class="Box-row">
+        <h2 class="h3 lh-condensed">
+          <a href="/sponsors/SomeOrg">Sponsored</a>
+        </h2>
+        <p class="col-9 color-fg-muted my-1 pr-4">Sponsored slot.</p>
+        <span class="d-inline-block float-sm-right">0 stars today</span>
+      </article>
+    `;
+    assert.deepEqual(parseTrendingHtml(html), []);
   });
 
   it("returns empty array for empty html", () => {
