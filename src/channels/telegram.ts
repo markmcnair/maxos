@@ -7,6 +7,7 @@ import { Readable } from "node:stream";
 import { smartChunk } from "../utils/chunker.js";
 import { markdownToTelegramHtml, stripHtmlToPlain } from "../utils/markdown-to-telegram.js";
 import { logger } from "../utils/logger.js";
+import { logTelegramReply } from "../telegram-reply-logger.js";
 import type {
   ChannelAdapter,
   ChannelConfig,
@@ -181,6 +182,22 @@ export class TelegramAdapter implements ChannelAdapter {
         : undefined,
       timestamp: ctx.message.date * 1000,
     };
+
+    try {
+      const logPath = join(homedir(), ".maxos", "workspace", "memory", "telegram-replies.jsonl");
+      logTelegramReply(
+        {
+          messageId: String(ctx.message.message_id),
+          conversationId: msg.conversationId,
+          text: msg.text,
+          replyToId: msg.replyToId,
+          timestamp: msg.timestamp,
+        },
+        logPath,
+      );
+    } catch (err) {
+      logger.warn("telegram:reply_log_failed", { error: err instanceof Error ? err.message : String(err) });
+    }
 
     this.handler?.(msg);
   }
