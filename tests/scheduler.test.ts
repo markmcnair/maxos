@@ -46,6 +46,29 @@ describe("parseHeartbeat", () => {
     assert.equal(tasks.length, 2);
   });
 
+  it("parses [script] tag on headings — marks task as deterministic shell exec", () => {
+    const md = "## */15 * * * * [script]\n- cd /tmp && echo hello";
+    const tasks = parseHeartbeat(md);
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0].script, true);
+    // Script tasks are always silent (no user delivery)
+    assert.equal(tasks[0].silent, true);
+    assert.equal(tasks[0].prompt, "cd /tmp && echo hello");
+  });
+
+  it("parses [script] with other tags like [timeout:2m]", () => {
+    const md = "## */15 * * * * [script] [timeout:2m]\n- do the thing";
+    const tasks = parseHeartbeat(md);
+    assert.equal(tasks[0].script, true);
+    assert.equal(tasks[0].timeout, 120_000);
+  });
+
+  it("non-script tasks do not have script set", () => {
+    const md = "## 0 6 * * *\n- Regular LLM task";
+    const tasks = parseHeartbeat(md);
+    assert.equal(tasks[0].script, undefined);
+  });
+
   it("parses [silent] tag on headings", () => {
     const md = "## Every 45 minutes [silent]\n- Write a checkpoint to today's journal";
     const tasks = parseHeartbeat(md);

@@ -310,6 +310,25 @@ export class Gateway {
             res.end(JSON.stringify({ ok: false, error: "Invalid request body" }));
           }
         });
+      } else if (req.url === "/api/deliver-task" && req.method === "POST") {
+        // Used by `maxos run-task` so manually-rerun tasks still get
+        // delivered to the user's channels via the normal pipeline.
+        this.readBody(req).then(async (body) => {
+          try {
+            const { taskName, result } = JSON.parse(body);
+            if (!taskName || typeof result !== "string") {
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ ok: false, error: "taskName and result are required" }));
+              return;
+            }
+            await this.deliverTaskResult(result, taskName);
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: true }));
+          } catch (err) {
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+          }
+        });
       } else if (req.url === "/api/oneshot/list" && req.method === "GET") {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(this.scheduler.getPendingOneShots()));

@@ -99,6 +99,34 @@ export function extractNameTokens(title: string): string[] {
   return tokens;
 }
 
+/**
+ * Pull a meaningful excerpt from a dossier body. Skips H1 title, empty
+ * template sections (e.g. `## The Comforts\n<!-- To be discovered -->`),
+ * and HTML comments. Returns the first ~250 chars of substantive prose.
+ * If nothing substantive exists, returns empty string (not boilerplate).
+ */
+export function extractDossierExcerpt(body: string): string {
+  // Strip HTML comments
+  let cleaned = body.replace(/<!--[\s\S]*?-->/g, "");
+  // Split into blocks on double-newlines (paragraphs / sections)
+  const blocks = cleaned.split(/\n\s*\n/);
+  const paragraphs: string[] = [];
+  for (const raw of blocks) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    // Skip pure heading-only blocks (e.g. "## The Comforts" with nothing under it)
+    if (/^#+\s/.test(trimmed) && !trimmed.includes("\n")) continue;
+    // If block starts with a heading, extract the prose under it
+    const lines = trimmed.split("\n");
+    const proseLines = lines.filter((l) => !/^#+\s/.test(l.trim()) && l.trim());
+    if (proseLines.length === 0) continue;
+    paragraphs.push(proseLines.join(" ").trim());
+    if (paragraphs.join(" ").length > 200) break;
+  }
+  const joined = paragraphs.join(" — ").replace(/\s+/g, " ").trim();
+  return joined.slice(0, 250);
+}
+
 function parseFrontmatter(raw: string): Record<string, string> {
   const out: Record<string, string> = {};
   if (!raw.startsWith("---\n")) return out;
@@ -150,10 +178,12 @@ export function loadDossiers(vaultRoot: string): Dossier[] {
     const orbit = (fm.orbit || "Unknown").trim();
     const phone = fm.phone ? fm.phone.trim() : undefined;
     const firstName = name.split(/\s+/)[0];
-    // Excerpt: first ~300 chars of body after frontmatter
+    // Excerpt: skip templated boilerplate (empty `## X` sections with only
+    // HTML comments), take the first real prose so the LLM gets useful
+    // context instead of "## The Comforts <!-- To be discovered -->".
     const bodyStart = content.indexOf("\n---", 4);
     const body = bodyStart >= 0 ? content.slice(bodyStart + 4).trim() : content;
-    const excerpt = body.slice(0, 300);
+    const excerpt = extractDossierExcerpt(body);
     out.push({ name, firstName, orbit, phone, path, excerpt });
   }
   return out;

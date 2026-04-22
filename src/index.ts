@@ -11,6 +11,7 @@ import { oneShot } from "./engine.js";
 import { loadConfig } from "./config.js";
 import { parseTimeToTimestamp } from "./utils/time.js";
 import { writeRestartMarker } from "./restart-marker.js";
+import { buildMemoryContext } from "./memory.js";
 
 const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".maxos");
 const HEALTH_URL = "http://127.0.0.1:18790/health";
@@ -137,6 +138,75 @@ program
     }
     const gateway = new Gateway(opts.foreground ?? false);
     await gateway.start();
+  });
+
+program
+  .command("run-task <name>")
+  .description("Manually run a scheduled HEARTBEAT task WITH full deterministic Kit injection (recovers from missed cron runs without bypassing Kit)")
+  .option("--dry-run", "Print the full injected prompt without spawning Claude")
+  .option("--no-deliver", "Print result to stdout only, skip Telegram delivery")
+  .action(async (nameArg: string, opts) => {
+    const { readFileSync } = await import("node:fs");
+    const heartbeatPath = join(MAXOS_HOME, "workspace", "HEARTBEAT.md");
+    if (!existsSync(heartbeatPath)) {
+      console.error(`HEARTBEAT.md not found at ${heartbeatPath}`);
+      process.exit(1);
+    }
+    const tasks = parseHeartbeat(readFileSync(heartbeatPath, "utf-8"));
+    const needle = nameArg.toLowerCase().replace(/[-_\s]/g, "");
+    const normalize = (s: string) => s.toLowerCase().replace(/[-_\s]/g, "");
+    const matches = tasks.filter((t) =>
+      normalize(t.prompt).includes(needle) || normalize(t.name ?? "").includes(needle),
+    );
+    if (matches.length === 0) {
+      console.error(`No task matched "${nameArg}". Known tasks:`);
+      for (const t of tasks) console.error(`  - ${t.name ?? "(unnamed)"}: ${t.prompt.slice(0, 60)}...`);
+      process.exit(1);
+    }
+    if (matches.length > 1) {
+      console.error(`Multiple tasks matched "${nameArg}":`);
+      for (const t of matches) console.error(`  - ${t.name ?? "(unnamed)"}: ${t.prompt.slice(0, 60)}...`);
+      process.exit(1);
+    }
+    const task = matches[0];
+    const taskName = task.name ?? `manual-${nameArg}`;
+    console.error(`Running task: ${taskName}`);
+
+    const memoryContext = await buildMemoryContext(task.prompt, { taskName }).catch(() => "");
+    const fullPrompt = memoryContext
+      ? `${memoryContext}\n\n---\n\n${task.prompt}`
+      : task.prompt;
+
+    if (opts.dryRun) {
+      console.log(fullPrompt);
+      return;
+    }
+
+    const config = loadConfig(join(MAXOS_HOME, "maxos.json"));
+    const result = await oneShot({
+      prompt: fullPrompt,
+      cwd: join(MAXOS_HOME, "workspace"),
+      model: config.engine.model,
+      outputFormat: "text",
+      timeout: config.engine.maxOneShotTimeout,
+      permissionMode: config.engine.permissionMode,
+      allowedTools: config.engine.allowedTools,
+    });
+
+    console.log(result);
+
+    if (opts.deliver !== false) {
+      // Best-effort Telegram delivery — only if daemon is up and can route
+      try {
+        await fetch(`${API_BASE}/deliver-task`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ taskName, result }),
+        });
+      } catch {
+        console.error("(Delivery to Telegram failed — daemon may be down. Result printed above.)");
+      }
+    }
   });
 
 program

@@ -1,7 +1,25 @@
 import { schedule, validate, type ScheduledTask } from "node-cron";
+import { exec } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { promisify } from "node:util";
 import { logger } from "./utils/logger.js";
 import type { PendingOneShot } from "./state.js";
+
+const execAsync = promisify(exec);
+
+async function execScript(command: string, timeoutMs: number): Promise<string> {
+  try {
+    const { stdout, stderr } = await execAsync(command, {
+      timeout: timeoutMs,
+      maxBuffer: 4 * 1024 * 1024,
+      shell: "/bin/bash",
+    });
+    return (stdout + (stderr ? `\nSTDERR: ${stderr}` : "")).slice(0, 8000);
+  } catch (err) {
+    const e = err as { stdout?: string; stderr?: string; message?: string };
+    return `SCRIPT ERROR: ${e.message ?? "unknown"}\nSTDOUT: ${e.stdout ?? ""}\nSTDERR: ${e.stderr ?? ""}`.slice(0, 8000);
+  }
+}
 
 export interface HeartbeatTask {
   name: string;
@@ -10,6 +28,13 @@ export interface HeartbeatTask {
   timeout?: number;
   /** If true, task runs but output is NOT delivered to user channels */
   silent?: boolean;
+  /**
+   * If true, the task's `prompt` is a shell command to exec directly —
+   * the daemon does NOT spawn Claude. Use for deterministic scripts that
+   * don't need LLM judgment (e.g. closure-watcher cron). Output goes to
+   * daemon.log instead of user channels.
+   */
+  script?: boolean;
 }
 
 export interface ProtectedWindow {
@@ -29,6 +54,7 @@ export function parseHeartbeat(markdown: string): HeartbeatTask[] {
   let currentCron: string | null = null;
 
   let isSilent = false;
+  let isScript = false;
   let customTimeout: number | undefined;
 
   for (const line of lines) {
@@ -39,6 +65,11 @@ export function parseHeartbeat(markdown: string): HeartbeatTask[] {
       // Check for [silent] tag — task runs but output is not delivered to user
       isSilent = /\[silent\]/i.test(heading);
       heading = heading.replace(/\[silent\]/gi, "").trim();
+
+      // Check for [script] tag — task runs as direct shell command, skipping
+      // the Claude engine entirely. Use for deterministic work.
+      isScript = /\[script\]/i.test(heading);
+      heading = heading.replace(/\[script\]/gi, "").trim();
 
       // Check for [timeout:Nm] tag — custom timeout in minutes
       const timeoutMatch = heading.match(/\[timeout:(\d+)m\]/i);
@@ -81,7 +112,17 @@ export function parseHeartbeat(markdown: string): HeartbeatTask[] {
         .replace(/[^a-z0-9\s]/g, "")
         .replace(/\s+/g, "-")
         .slice(0, 50);
-      tasks.push({ name, cron: currentCron, prompt, silent: isSilent, timeout: customTimeout });
+      // Script tasks are always silent (no user delivery) since their output
+      // goes to daemon.log, not a channel. Force silent=true for script tasks.
+      const effectiveSilent = isScript ? true : isSilent;
+      tasks.push({
+        name,
+        cron: currentCron,
+        prompt,
+        silent: effectiveSilent,
+        timeout: customTimeout,
+        script: isScript || undefined,
+      });
     }
   }
 
@@ -220,7 +261,15 @@ export class Scheduler {
 
     this.runningCount++;
     try {
-      const result = await this.runner(task.prompt, task.name, task.timeout);
+      let result: string;
+      if (task.script) {
+        // Direct shell exec — no Claude spawn, no Kit injection, no token cost.
+        // Intended for deterministic maintenance (closure-watcher, etc.).
+        result = await execScript(task.prompt, task.timeout ?? 60_000);
+        logger.info("scheduler:script_complete", { task: task.name, resultLength: result.length });
+      } else {
+        result = await this.runner(task.prompt, task.name, task.timeout);
+      }
       this.failures.set(task.name, 0);
       this.lastRun.set(task.name, Date.now());
 
