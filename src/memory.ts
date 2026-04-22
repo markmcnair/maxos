@@ -8,6 +8,7 @@ import { buildCalendarBrief } from "./calendar-brief.js";
 import { reconcileAllLoops, formatLoopReconciliation } from "./loop-reconciler.js";
 import { buildRelationshipKit } from "./relationship-kit.js";
 import { loadAuthoritativeRules, formatAuthoritativeRules, defaultExtraSourceDirs } from "./authoritative-rules.js";
+import { buildMeetingPrepKit } from "./meeting-prep-kit.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -41,7 +42,7 @@ export interface BuildMemoryOptions {
  * Return type: which task kit, if any, a task name maps to.
  * Extracted so the mapping is explicit and testable.
  */
-export function classifyTaskKit(taskName: string | undefined): "morning-brief" | "shutdown-debrief" | "weekly-relationship-review" | null {
+export function classifyTaskKit(taskName: string | undefined): "morning-brief" | "shutdown-debrief" | "weekly-relationship-review" | "meeting-prep" | null {
   if (!taskName) return null;
   const lower = taskName.toLowerCase();
   if (lower.includes("morning-brief") || lower.includes("morning_brief") || lower.includes("morningbrief")) {
@@ -52,6 +53,9 @@ export function classifyTaskKit(taskName: string | undefined): "morning-brief" |
   }
   if (lower.includes("weekly-relationship-review") || lower.includes("weeklyrelationship") || lower.includes("relationship-review") || lower.includes("relationshipreview")) {
     return "weekly-relationship-review";
+  }
+  if (lower.includes("meeting-prep") || lower.includes("meeting_prep") || lower.includes("meetingprep")) {
+    return "meeting-prep";
   }
   return null;
 }
@@ -281,6 +285,18 @@ export async function buildMemoryContext(
     try {
       const rkit = await buildRelationshipKit({ maxosHome, now });
       if (rkit) sections.push(rkit);
+    } catch {
+      // Best-effort.
+    }
+  }
+
+  if (kit === "meeting-prep") {
+    // Parse MEETING CONTEXT from the prompt + resolve attendees against
+    // dossiers. Prevents the Mike-Salem-for-Mark-y-Mark hallucination
+    // class at the meeting-prep surface.
+    try {
+      const mkit = buildMeetingPrepKit({ maxosHome, prompt });
+      if (mkit) sections.push(mkit);
     } catch {
       // Best-effort.
     }

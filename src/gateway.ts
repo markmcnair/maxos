@@ -18,6 +18,7 @@ import { loadDroppedTopics, stripDroppedFromOutput, pruneOpenLoopsAgainstDropped
 import { loadOpenLoops, saveOpenLoops } from "./loop-reconciler.js";
 import { fetchAuthoritativeGhosted, stripInvalidGhosted } from "./ghosted-filter.js";
 import { classifyTaskKit } from "./memory.js";
+import { detectMissedRuns, formatMissedAlert, type TaskLastRunInfo } from "./missed-cron.js";
 
 const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".maxos");
 
@@ -99,6 +100,8 @@ export class Gateway {
   private lastResetDate: string | null = null;
   private shuttingDown = false;
   private heartbeatPath: string = "";
+  /** Current parsed HEARTBEAT tasks — used by missed-cron detection. */
+  private currentTasks: import("./scheduler.js").HeartbeatTask[] = [];
 
   constructor(private readonly foreground: boolean) {
     if (foreground) enableConsoleLogging();
@@ -190,6 +193,16 @@ export class Gateway {
 
     if (this.config.scheduler.enabled) {
       this.startScheduler();
+      // Detect scheduled tasks that were supposed to fire while the daemon was
+      // down. Alert the user so they know something was skipped and can run it
+      // manually via `maxos run-task`. Window: 6 hours — covers a typical
+      // overnight / extended crash; longer windows get noisy for non-critical
+      // silent tasks.
+      await this.checkForMissedRuns().catch((err) => {
+        logger.warn("gateway:missed_cron_check_failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
       // Load and start one-shot timer loop
       this.scheduler.loadOneShots(this.state.current.pendingOneShots ?? []);
       this.scheduler.onOneShotChange((shots) => {
@@ -238,7 +251,44 @@ export class Gateway {
     const md = readFileSync(this.heartbeatPath, "utf-8");
     const tasks = parseHeartbeat(md);
     this.scheduler.schedule(tasks);
+    this.currentTasks = tasks;
     logger.info("gateway:scheduler_loaded", { taskCount: tasks.length });
+  }
+
+  /**
+   * On startup, check whether any scheduled tasks were supposed to fire
+   * while the daemon was down. If so, alert the user so they can run
+   * them manually via `maxos run-task`. Silent tasks (closure-watcher,
+   * journal checkpoints, etc.) are logged but not surfaced.
+   */
+  private async checkForMissedRuns(): Promise<void> {
+    const tasks = this.currentTasks;
+    if (!tasks || tasks.length === 0) return;
+    const state = this.scheduler.getState();
+    const infos: TaskLastRunInfo[] = tasks.map((t) => ({
+      name: t.name,
+      cron: t.cron,
+      silent: t.silent ?? false,
+      lastRun: state.lastRun[t.name],
+    }));
+    const missed = detectMissedRuns(infos, new Date(), 6);
+    if (missed.length === 0) {
+      logger.info("gateway:missed_cron_check", { missed: 0 });
+      return;
+    }
+    for (const m of missed) {
+      logger.warn("gateway:missed_task", {
+        task: m.taskName,
+        scheduled: m.scheduledFireTime,
+        ageMinutes: m.ageMinutes,
+        silent: m.silent,
+      });
+    }
+    const userFacing = missed.filter((m) => !m.silent);
+    if (userFacing.length > 0) {
+      const alert = formatMissedAlert(missed);
+      await this.alertUser(alert).catch(() => {});
+    }
   }
 
   private startDailyResetCheck(): void {
