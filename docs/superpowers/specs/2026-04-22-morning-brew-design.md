@@ -36,7 +36,7 @@ The skill is **self-healing and self-improving**. Every dimension of picking —
 - **Scout**: Sun/Mon/Tue/Wed/Thu/Sat nights at 22:00. Only Fri night is skipped (Sabbath begins 17:30 Fri).
   - Thu night scout runs while Mark is asleep — doesn't interfere with date night — delivers prototype for Fri morning brew.
   - Sat night scout (post-Sabbath-sundown) delivers prototype for Sun morning brew.
-- **Every brew day has a preceding scout.** The only reason a brew arrives without a prototype is scout failure, low confidence, or budget cap hit — all reported honestly inline.
+- **Every brew day has a preceding scout.** The only reason a brew arrives without a prototype is scout failure, low confidence, or scheduler-timeout exhaustion — all reported honestly inline.
 
 Pairing:
 
@@ -174,7 +174,6 @@ Brew will surface the suggestion; Mark's A/B-style reply can trigger tomorrow's 
    - If FAIL → re-dispatch builders with QA feedback attached, re-run QA
    - Loop continues until `qa-tester` returns PASS
    - **Stop conditions** (any one triggers fallback):
-     - Budget cap reached ($10) — real hard stop
      - Two consecutive QA runs return identical failure modes (can't make progress — approach is wrong)
      - Scout's 6h scheduler timeout approaching (<30 min remaining)
    - On stop without PASS → fall back to "concept + starter repo" delivery with a note explaining what was attempted
@@ -198,9 +197,9 @@ Brew will surface the suggestion; Mark's A/B-style reply can trigger tomorrow's 
    }
    ```
 
-### Budget cap
+### Runtime cap
 
-Scout tracks cumulative Claude API cost for its run. **Hard cap: $10 per night** (well under the $100 delegation threshold from `rules/spending-approvals.md`). If hit → stop, deliver what's done to that point. Log spend to archive file.
+Scout inherits the cron's `[timeout:360m]` — 6 hours hard ceiling. **No dollar cap.** The daemon spawns `claude --print` under Mark's Claude Code OAuth subscription, so sub-agent dispatches run on the subscription's rate limit, not a billable API meter. The only quota is the subscription itself, which the 6h scheduler timeout naturally bounds.
 
 ### Scope discipline
 
@@ -505,13 +504,13 @@ Best-in-class tool for each operation — planner should honor these choices unl
 
 | Risk | Mitigation |
 |---|---|
-| Scout picks a bad candidate → waste overnight build | Confidence gate (≥4.2/5) + $10 budget cap |
-| Builder pipeline runs away | Budget cap ($10) + same-failure-twice detection + 6h scheduler timeout |
+| Scout picks a bad candidate → waste overnight build | Confidence gate (≥4.2/5) is the primary safeguard; wasted run is at worst one night of idle CPU |
+| Builder pipeline runs away | Same-failure-twice detection + 6h scheduler timeout |
 | Telegram reply logger misses a reply (bug or race) | Brew treats missing reply as "hold" (no penalty), logs the miss for manual check |
 | Mark replies with something unexpected (neither A nor B) | Regex parse falls through to "ambiguous" → asks in today's brew to clarify |
 | Near-match check (30-day dedup) false-negatives same topic | 3-keyword tag system + semantic similarity ≥ 0.85 threshold; Mark can manually add to `covered-topics.md` to force dedup |
 | Overnight build deploys something broken to Vercel | qa-tester PASS required before deploy; on Vercel error, fall back to Claude Preview or repo-only |
-| Scout burns budget and delivers nothing | Budget cap + explicit "no build last night: $10 cap hit" message in brew — honest reporting, not silent failure |
+| Scout's 6h window exhausts without a usable build | Explicit "ran out of time, partial work at <path>" message in brew — honest reporting, not silent failure |
 | Sabbath/date-night gate drift | Deterministic cron schedule (cron days 0-3 for scout = Sun–Wed) — hard-coded, can't accidentally run |
 
 ## Open questions (for Mark before implementation)

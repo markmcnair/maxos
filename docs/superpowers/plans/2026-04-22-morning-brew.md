@@ -1848,7 +1848,6 @@ describe("prime-hit I/O", () => {
         tech: ["Next.js", "Claude API"],
         repo: "/Users/Max/Projects/prototypes/2026-04-22-x/",
       },
-      spendUsd: 3.42,
     };
     writePrimeHit(p, hit);
     const read = readPrimeHit(p);
@@ -1863,7 +1862,6 @@ describe("prime-hit I/O", () => {
       confidence: 3.0,
       build: false,
       suggest: "Want me to prototype this tonight?",
-      spendUsd: 0.15,
     };
     writePrimeHit(p, hit);
     assert.deepEqual(readPrimeHit(p), hit);
@@ -1907,7 +1905,6 @@ export interface PrimeHit {
   attempted?: boolean;
   reason?: string;
   partial_work?: string;
-  spendUsd: number;
 }
 
 export function writePrimeHit(path: string, hit: PrimeHit): void {
@@ -1956,7 +1953,7 @@ Create `~/.maxos/workspace/tasks/prime-scout.md`:
 
 You are Max running Mark's overnight scout. Your job: find the single most valuable Prime Framework hit (Create Value / Remove Toil / Automate) connected to Mark's active work, and if confidence is high enough, build a working prototype before he wakes up.
 
-**Runtime budget: 6 hours max. Financial budget: $10 max (track spend).**
+**Runtime cap: 6 hours max (the cron's `[timeout:360m]`).** No dollar cap — this runs under Mark's Claude Code OAuth subscription, not a billable API meter. Stop conditions are QA PASS, scheduler timeout, or two identical QA failures in a row.
 
 ## Voice & Quality Contract (non-negotiable)
 
@@ -2050,7 +2047,6 @@ writePrimeHit('$HOME/.maxos/workspace/memory/morning-brew/prime-hit.json', {
   confidence: /* score */,
   build: false,
   suggest: 'Found <X>. Want me to prototype it tonight?',
-  spendUsd: 0.50,
 });
 "
 ```
@@ -2096,7 +2092,6 @@ If FAIL → re-dispatch frontend-builder and/or backend-builder with the QA feed
 
 **Stop conditions** (any one):
 - qa-tester returns PASS
-- Budget tracker shows cumulative spend ≥ $10
 - Two consecutive QA runs return identical failure modes
 - Less than 30 min remaining in the 6h task window
 
@@ -2112,13 +2107,7 @@ If qa-tester did NOT reach PASS before a stop condition: write build:false with 
 
 ### 5e: Write prime-hit.json
 
-Invoke `writePrimeHit` via inline Node (as in Phase 4) with the full PrimeHit shape — build:true, prototype object filled, spendUsd set.
-
-## Phase 6 — Spend tracking
-
-Throughout the scout, maintain a running spend estimate. Use model pricing heuristics (Claude Opus ~$15/1M input tokens, ~$75/1M output; Sonnet ~$3/$15). Every major Agent dispatch or tool call, add an estimated delta to the spend counter. If spend ≥ $10, stop and write the current state.
-
-(Precise spend tracking is a nice-to-have — for now use reasonable estimates. A more rigorous tracker could be added via `brew-spend-tracker.ts` in a follow-up.)
+Invoke `writePrimeHit` via inline Node (as in Phase 4) with the full PrimeHit shape — build:true, prototype object filled.
 
 ## Output (to Telegram, silent=false for visibility)
 
@@ -2132,12 +2121,10 @@ Otherwise scout finishes silently — the morning brew surfaces prime-hit.json a
 
 ## Rules
 
-- NEVER exceed $10 in one night.
-- NEVER run a build longer than 6 hours.
+- NEVER run a build longer than 6 hours (the scheduler enforces this via `[timeout:360m]`).
 - NEVER touch credential files (`.enc`, `credentials.json`) per SOUL.md guardrails.
 - NEVER deploy a build that didn't reach qa-tester PASS.
 - NEVER fabricate a candidate URL — every source must come from a real fetch.
-- Log all spend to scout's archive file for weekly introspection to learn from.
 ```
 
 - [ ] **Step 2: No code changes — workspace task file only**
