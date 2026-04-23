@@ -31,6 +31,8 @@ export interface OutboundMessage {
   text: string;
   format?: "text" | "markdown" | "html";
   replyToId?: string;
+  /** Optional task name — set when delivering a scheduled task result so the channel can record the outbound message_id. */
+  taskName?: string;
 }
 
 export interface ChannelCapabilities {

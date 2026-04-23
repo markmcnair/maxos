@@ -725,7 +725,7 @@ export class Gateway {
       if (channel.isHealthy()) {
         const userId = this.config.channels.telegram?.allowedUsers[0];
         if (userId) {
-          await channel.send(`dm:${userId}`, { text: result, format: "html" });
+          await channel.send(`dm:${userId}`, { text: result, format: "html", taskName });
           return;
         }
       }

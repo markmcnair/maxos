@@ -8,6 +8,7 @@ import { smartChunk } from "../utils/chunker.js";
 import { markdownToTelegramHtml, stripHtmlToPlain } from "../utils/markdown-to-telegram.js";
 import { logger } from "../utils/logger.js";
 import { logTelegramReply } from "../telegram-reply-logger.js";
+import { recordOutboundId } from "../brew-outbound-capture.js";
 import type {
   ChannelAdapter,
   ChannelConfig,
@@ -357,6 +358,8 @@ export class TelegramAdapter implements ChannelAdapter {
     // and Telegram counts UTF-8 bytes not characters for some content.
     const chunks = smartChunk(formatted, 3800);
 
+    let firstMessageId: string | null = null;
+
     for (const chunk of chunks) {
       try {
         const opts: Record<string, unknown> = {
@@ -364,7 +367,8 @@ export class TelegramAdapter implements ChannelAdapter {
         };
         if (type === "topic") opts.message_thread_id = Number(id);
 
-        await this.bot.api.sendMessage(chatId, chunk, opts);
+        const sent = await this.bot.api.sendMessage(chatId, chunk, opts);
+        if (firstMessageId === null) firstMessageId = String(sent.message_id);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
 
@@ -395,6 +399,24 @@ export class TelegramAdapter implements ChannelAdapter {
 
         logger.error("telegram:send_error", { error: errMsg });
         throw err;
+      }
+    }
+
+    // After all chunks sent successfully, record the first message_id for
+    // task-based reply lookup (e.g. morning-brew's next-day reply scan).
+    if (content.taskName && firstMessageId !== null) {
+      try {
+        const outboundPath = join(MAXOS_HOME, "workspace", "memory", "outbound-ids.jsonl");
+        recordOutboundId(outboundPath, {
+          task: content.taskName,
+          messageId: firstMessageId,
+          ts: Date.now(),
+        });
+      } catch (err) {
+        logger.warn("telegram:outbound_record_failed", {
+          task: content.taskName,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
   }
