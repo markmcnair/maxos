@@ -143,7 +143,7 @@ export class Gateway {
       this.config.scheduler.maxConcurrentTasks,
       this.config.scheduler.circuitBreakerThreshold,
       this.config.scheduler.protectedWindows,
-      (prompt, taskName, timeout) => this.runOneShot(prompt, taskName, timeout),
+      (prompt, taskName, timeout, model) => this.runOneShot(prompt, taskName, timeout, model),
       (result, taskName) => this.deliverTaskResult(result, taskName),
       (msg) => this.alertUser(msg),
     );
@@ -804,7 +804,12 @@ export class Gateway {
     return session;
   }
 
-  private async runOneShot(prompt: string, taskName: string, timeout?: number): Promise<string> {
+  private async runOneShot(
+    prompt: string,
+    taskName: string,
+    timeout?: number,
+    modelOverride?: string,
+  ): Promise<string> {
     // Inject recent memory context before spawning the one-shot. Every task
     // starts a fresh Claude session, so without this, yesterday's "I handled
     // that" slips out of context and the debrief re-raises the same loop.
@@ -815,15 +820,18 @@ export class Gateway {
       ? `${memoryContext}\n\n---\n\n${prompt}`
       : prompt;
 
+    const model = modelOverride ?? this.config.engine.model;
+
     logger.info("gateway:oneshot", {
       task: taskName,
       memoryChars: memoryContext.length,
+      model,
     });
 
     const rawResult = await oneShot({
       prompt: finalPrompt,
       cwd: join(MAXOS_HOME, "workspace"),
-      model: this.config.engine.model,
+      model,
       outputFormat: "text",
       timeout: timeout ?? this.config.engine.maxOneShotTimeout,
       permissionMode: this.config.engine.permissionMode,

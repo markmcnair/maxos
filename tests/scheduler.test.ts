@@ -100,6 +100,40 @@ describe("parseHeartbeat", () => {
     assert.equal(tasks[0].cron, "*/45 * * * *");
   });
 
+  it("parses [model:NAME] tag and sets task.model", () => {
+    const md = "## 25,55 * * * * [silent] [model:sonnet]\n- Journal checkpoint";
+    const tasks = parseHeartbeat(md);
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0].model, "sonnet");
+    assert.equal(tasks[0].silent, true);
+    assert.equal(tasks[0].cron, "25,55 * * * *");
+  });
+
+  it("accepts hyphenated + versioned model names", () => {
+    const md = "## 0 6 * * * [model:claude-haiku-4-5]\n- Cheap one-shot";
+    const tasks = parseHeartbeat(md);
+    assert.equal(tasks[0].model, "claude-haiku-4-5");
+  });
+
+  it("tasks without [model:NAME] have undefined model (fall back to config default)", () => {
+    const md = "## 0 6 * * 0-5\n- Run morning brief";
+    const tasks = parseHeartbeat(md);
+    assert.equal(tasks[0].model, undefined);
+  });
+
+  it("[model:NAME] does not pollute subsequent task without its own model tag", () => {
+    const md = [
+      "## 0 6 * * * [model:sonnet]",
+      "- Cheap task",
+      "## 0 7 * * *",
+      "- Default-model task",
+    ].join("\n");
+    const tasks = parseHeartbeat(md);
+    assert.equal(tasks.length, 2);
+    assert.equal(tasks[0].model, "sonnet");
+    assert.equal(tasks[1].model, undefined);
+  });
+
   it("tasks without [timeout:Nm] have undefined timeout", () => {
     const md = "## 0 6 * * 0-5\n- Run morning brief";
     const tasks = parseHeartbeat(md);

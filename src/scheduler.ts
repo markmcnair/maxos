@@ -59,6 +59,14 @@ export interface HeartbeatTask {
    * daemon.log instead of user channels.
    */
   script?: boolean;
+  /**
+   * Per-task model override (e.g. "sonnet", "haiku", "opus"). When set,
+   * the runner uses this instead of the daemon-wide engine.model. Use
+   * [model:sonnet] on cheap tasks (journal checkpoint, auth watchers,
+   * triage) so the 24/7 cost isn't all opus. Falls back to engine.model
+   * if unset.
+   */
+  model?: string;
 }
 
 export interface ProtectedWindow {
@@ -68,7 +76,12 @@ export interface ProtectedWindow {
   end?: string;
 }
 
-type TaskRunner = (prompt: string, taskName: string, timeout?: number) => Promise<string>;
+type TaskRunner = (
+  prompt: string,
+  taskName: string,
+  timeout?: number,
+  model?: string,
+) => Promise<string>;
 type ResultDeliverer = (result: string, taskName: string) => Promise<void>;
 type AlertSender = (message: string) => Promise<void>;
 
@@ -80,6 +93,7 @@ export function parseHeartbeat(markdown: string): HeartbeatTask[] {
   let isSilent = false;
   let isScript = false;
   let customTimeout: number | undefined;
+  let currentModel: string | undefined;
 
   for (const line of lines) {
     const headingMatch = line.match(/^##\s+(.+)/);
@@ -99,6 +113,11 @@ export function parseHeartbeat(markdown: string): HeartbeatTask[] {
       const timeoutMatch = heading.match(/\[timeout:(\d+)m\]/i);
       customTimeout = timeoutMatch ? parseInt(timeoutMatch[1]) * 60_000 : undefined;
       heading = heading.replace(/\[timeout:\d+m\]/gi, "").trim();
+
+      // Check for [model:NAME] tag — per-task model override
+      const modelMatch = heading.match(/\[model:([a-z0-9.-]+)\]/i);
+      currentModel = modelMatch ? modelMatch[1] : undefined;
+      heading = heading.replace(/\[model:[a-z0-9.-]+\]/gi, "").trim();
 
       // "Every N minutes"
       const everyMinMatch = heading.match(/^Every\s+(\d+)\s+minutes?$/i);
@@ -146,6 +165,7 @@ export function parseHeartbeat(markdown: string): HeartbeatTask[] {
         silent: effectiveSilent,
         timeout: customTimeout,
         script: isScript || undefined,
+        model: currentModel,
       });
     }
   }
@@ -330,7 +350,7 @@ export class Scheduler {
         result = await execScript(task.prompt, task.timeout ?? 60_000);
         logger.info("scheduler:script_complete", { task: task.name, resultLength: result.length });
       } else {
-        result = await this.runner(task.prompt, task.name, task.timeout);
+        result = await this.runner(task.prompt, task.name, task.timeout, task.model);
       }
       this.failures.set(task.name, 0);
       this.lastRun.set(task.name, Date.now());
