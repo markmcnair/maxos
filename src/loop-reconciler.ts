@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
@@ -68,11 +68,30 @@ export function loadOpenLoops(maxosHome: string): OpenLoop[] {
   }
 }
 
-/** Persist open loops to JSON. Creates parent dir if needed. */
+/**
+ * Persist open loops to JSON. Atomic via temp-file-then-rename so concurrent
+ * readers never see a half-written file and concurrent writers' last-write
+ * wins atomically (still racy on the load-modify-save sequence — callers
+ * that need true serialization should add a lock around the whole sequence).
+ *
+ * Multiple writers exist: closure-watcher (every 15 min), google-tasks-
+ * reconciler (every 15 min, offset 7), gateway startup, and the LLM via
+ * debrief tasks (any time). Atomic rename eliminates the "half-written
+ * file" failure mode at minimum.
+ */
 export function saveOpenLoops(maxosHome: string, loops: OpenLoop[]): void {
   const dir = join(maxosHome, "workspace", "memory");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "open-loops.json"), JSON.stringify(loops, null, 2));
+  const target = join(dir, "open-loops.json");
+  const tmp = `${target}.tmp.${process.pid}`;
+  try {
+    writeFileSync(tmp, JSON.stringify(loops, null, 2));
+    renameSync(tmp, target);
+  } catch (err) {
+    // Best-effort cleanup of the temp file if rename failed mid-flight
+    try { unlinkSync(tmp); } catch { /* file may not exist */ }
+    throw err;
+  }
 }
 
 /**

@@ -7,6 +7,30 @@ import type { PendingOneShot } from "./state.js";
 
 const execAsync = promisify(exec);
 
+/**
+ * Build the structured payload logged when a task throws. Pure helper —
+ * tested in scheduler.test.ts. Pre-fix this log line was missing the
+ * error message entirely, which is how the 2026-05-04 claude-CLI auth
+ * 401 storm went undiagnosed for ~14 hours: every task fired, every
+ * task failed, and the daemon log contained no string that pointed at
+ * the actual problem (auth). Now `error` carries err.message, capped
+ * at 1000 chars so a single pathological stack doesn't bloat the log.
+ */
+export function buildTaskFailureLogEntry(
+  taskName: string,
+  failures: number,
+  err: unknown,
+): { task: string; failures: number; error: string } {
+  const raw = err instanceof Error ? err.message : String(err);
+  const TRUNCATION_SUFFIX = "…(truncated)";
+  const MAX_LEN = 1000;
+  const error =
+    raw.length > MAX_LEN
+      ? raw.slice(0, MAX_LEN - TRUNCATION_SUFFIX.length) + TRUNCATION_SUFFIX
+      : raw;
+  return { task: taskName, failures, error };
+}
+
 async function execScript(command: string, timeoutMs: number): Promise<string> {
   try {
     const { stdout, stderr } = await execAsync(command, {
@@ -111,7 +135,7 @@ export function parseHeartbeat(markdown: string): HeartbeatTask[] {
         .toLowerCase()
         .replace(/[^a-z0-9\s]/g, "")
         .replace(/\s+/g, "-")
-        .slice(0, 50);
+        .slice(0, 100);
       // Script tasks are always silent (no user delivery) since their output
       // goes to daemon.log, not a channel. Force silent=true for script tasks.
       const effectiveSilent = isScript ? true : isSilent;
@@ -218,6 +242,44 @@ export class Scheduler {
     };
   }
 
+  /**
+   * Drop any failures / disabled / lastRun entries whose key isn't a
+   * currently-registered task. Called from gateway.reloadHeartbeat after
+   * the new schedule is in place — keeps state.json from accumulating
+   * orphan slugs from old truncations or removed heartbeat entries.
+   *
+   * Returns the pruned keys per category for logging.
+   */
+  pruneStaleState(currentTaskNames: Set<string>): {
+    failuresPruned: string[];
+    disabledPruned: string[];
+    lastRunPruned: string[];
+  } {
+    const failuresPruned: string[] = [];
+    const disabledPruned: string[] = [];
+    const lastRunPruned: string[] = [];
+
+    for (const k of [...this.failures.keys()]) {
+      if (!currentTaskNames.has(k)) {
+        this.failures.delete(k);
+        failuresPruned.push(k);
+      }
+    }
+    for (const k of [...this.disabled]) {
+      if (!currentTaskNames.has(k)) {
+        this.disabled.delete(k);
+        disabledPruned.push(k);
+      }
+    }
+    for (const k of [...this.lastRun.keys()]) {
+      if (!currentTaskNames.has(k)) {
+        this.lastRun.delete(k);
+        lastRunPruned.push(k);
+      }
+    }
+    return { failuresPruned, disabledPruned, lastRunPruned };
+  }
+
   schedule(tasks: HeartbeatTask[]): void {
     for (const job of this.jobs.values()) job.stop();
     this.jobs.clear();
@@ -286,10 +348,7 @@ export class Scheduler {
     } catch (err) {
       const count = (this.failures.get(task.name) ?? 0) + 1;
       this.failures.set(task.name, count);
-      logger.error("scheduler:task_failed", {
-        task: task.name,
-        failures: count,
-      });
+      logger.error("scheduler:task_failed", buildTaskFailureLogEntry(task.name, count, err));
 
       if (count >= this.circuitBreakerThreshold) {
         this.disabled.add(task.name);

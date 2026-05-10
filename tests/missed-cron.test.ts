@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   detectMissedRuns,
+  filterRecentFireFalsePositives,
   formatMissedAlert,
   type TaskLastRunInfo,
   type MissedRun,
@@ -133,5 +134,68 @@ describe("formatMissedAlert", () => {
 
   it("returns empty string when nothing was missed", () => {
     assert.equal(formatMissedAlert([]), "");
+  });
+});
+
+describe("filterRecentFireFalsePositives (regression for restart-mid-fire)", () => {
+  const fixedNow = new Date("2026-04-28T21:35:30Z");
+
+  it("removes a missed entry whose fire was within the last 5 min (mid-fire)", () => {
+    const missed: MissedRun[] = [
+      {
+        taskName: "shutdown-debrief",
+        scheduledFireTime: "2026-04-28T21:35:00Z", // 30s before now
+        lastRun: undefined,
+        silent: false,
+        ageMinutes: 0,
+      },
+    ];
+    const filtered = filterRecentFireFalsePositives(missed, fixedNow);
+    assert.equal(filtered.length, 0, "30s-ago fire should be suppressed as likely-mid-flight");
+  });
+
+  it("keeps a missed entry whose fire was 10+ min ago", () => {
+    const missed: MissedRun[] = [
+      {
+        taskName: "shutdown-debrief",
+        scheduledFireTime: "2026-04-28T21:25:00Z", // 10:30 ago
+        lastRun: undefined,
+        silent: false,
+        ageMinutes: 10,
+      },
+    ];
+    const filtered = filterRecentFireFalsePositives(missed, fixedNow);
+    assert.equal(filtered.length, 1, "10-min-old fire is genuinely missed, not in flight");
+  });
+
+  it("custom grace window — 30s grace keeps a 1-min-old entry", () => {
+    const missed: MissedRun[] = [
+      {
+        taskName: "x",
+        scheduledFireTime: "2026-04-28T21:34:30Z", // 1 min ago
+        lastRun: undefined,
+        silent: false,
+        ageMinutes: 1,
+      },
+    ];
+    const filtered = filterRecentFireFalsePositives(missed, fixedNow, 30_000);
+    assert.equal(filtered.length, 1);
+  });
+
+  it("regression: 2026-04-28 21:35 daemon restart wouldn't have flagged Tue debrief", () => {
+    // The actual scenario from the daemon log: launchctl kickstart at 21:35:30,
+    // mid-fire of the 21:35:00 debrief. Without this filter the daemon would
+    // (and did) emit a false-positive 'gateway:missed_task' warning.
+    const missed: MissedRun[] = [
+      {
+        taskName: "run-shutdown-debrief-read-tasksshutdowndebriefmd-and-execute-every-step",
+        scheduledFireTime: "2026-04-28T21:35:00Z",
+        lastRun: undefined,
+        silent: false,
+        ageMinutes: 1,
+      },
+    ];
+    const filtered = filterRecentFireFalsePositives(missed, fixedNow);
+    assert.equal(filtered.length, 0);
   });
 });

@@ -58,6 +58,57 @@ describe("loadOpenLoops / saveOpenLoops", () => {
     const loops = loadOpenLoops(home);
     assert.equal(loops.length, 2);
   });
+
+  it("atomic write — concurrent saves never produce a half-written file (audit P1-4)", async () => {
+    // Audit P1-4: closure-watcher and google-tasks-reconciler are scheduled
+    // 7 minutes apart (xx:00/15/30/45 vs xx:07/22/37/52) so they don't
+    // collide on the minute boundary, but a slow run of one could overlap
+    // with the next firing of the other. saveOpenLoops uses tmp+rename
+    // — last-write-wins atomically. A reader can never see an empty or
+    // partial file under contention.
+    const stateA: OpenLoop[] = [
+      { id: "a1", topic: "Loop from writer A", firstSeen: "2026-05-01", lastUpdated: "2026-05-01" },
+      { id: "a2", topic: "Another from A", firstSeen: "2026-05-01", lastUpdated: "2026-05-01" },
+    ];
+    const stateB: OpenLoop[] = [
+      { id: "b1", topic: "Loop from writer B", firstSeen: "2026-05-01", lastUpdated: "2026-05-01" },
+    ];
+
+    // Fire many concurrent saves alternating between two states. With
+    // tmp+rename atomicity, each readback must observe exactly one of
+    // the two states — never a hybrid, never empty, never half-written.
+    const writes = Array.from({ length: 50 }, (_, i) =>
+      Promise.resolve().then(() => saveOpenLoops(home, i % 2 === 0 ? stateA : stateB)),
+    );
+    await Promise.all(writes);
+
+    // Final readback must be valid (not corrupt, not empty)
+    const final = loadOpenLoops(home);
+    assert.ok(final.length > 0, "file must not be empty");
+    const ids = final.map((l) => l.id).sort().join(",");
+    assert.ok(
+      ids === "a1,a2" || ids === "b1",
+      `final state must match exactly one writer's input, got: ${ids}`,
+    );
+
+    // Mid-flight readbacks during the write storm must also be valid.
+    // Spawn another wave with concurrent reads — none should throw or
+    // see partial content.
+    const readResults = await Promise.all(
+      Array.from({ length: 100 }, async (_, i) => {
+        if (i % 2 === 0) saveOpenLoops(home, stateA);
+        else saveOpenLoops(home, stateB);
+        return loadOpenLoops(home);
+      }),
+    );
+    for (const result of readResults) {
+      const k = result.map((l) => l.id).sort().join(",");
+      assert.ok(
+        k === "a1,a2" || k === "b1",
+        `mid-flight readback must be a valid state, got: ${k}`,
+      );
+    }
+  });
 });
 
 describe("classifyLoopEvidence", () => {

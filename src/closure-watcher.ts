@@ -5,6 +5,15 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { loadDossiers, type Dossier } from "./calendar-brief.js";
 import { loadOpenLoops, saveOpenLoops } from "./loop-reconciler.js";
+import {
+  applyDropDecisionsToLoops,
+  applyNewLoopFactsFromClosures,
+} from "./closures-to-loops.js";
+import {
+  loadDroppedTopics,
+  loadDroppedLoopIds,
+  pruneOpenLoopsAgainstDropped,
+} from "./dropped-loops-filter.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -149,7 +158,13 @@ async function fetchOutgoingDms(
       if (msg) messages.push(msg);
     }
     return messages;
-  } catch {
+  } catch (err) {
+    // Audit P1-2: differentiate "no closures because nothing texted" from
+    // "no closures because the scanner crashed" — the latter is a health
+    // signal worth surfacing in stderr → daemon.stderr.log → digest.
+    process.stderr.write(
+      `closure-watcher: imessage-scan failed (${imessageScan}): ${err instanceof Error ? err.message : String(err)}\n`,
+    );
     return [];
   }
 }
@@ -175,7 +190,12 @@ export async function runClosureWatcher(options: {
   hours?: number;
   imessageScan?: string;
   now?: Date;
-} = {}): Promise<{ written: number }> {
+} = {}): Promise<{
+  written: number;
+  dropped: string[];
+  addedFromFacts: string[];
+  blockedFromFacts: string[];
+}> {
   const maxosHome = options.maxosHome ?? process.env.MAXOS_HOME ?? join(homedir(), ".maxos");
   const vaultRoot = options.vaultRoot ?? join(maxosHome, "vault");
   const hours = options.hours ?? 0.25;
@@ -202,7 +222,52 @@ export async function runClosureWatcher(options: {
   appendClosures(maxosHome, now, lines);
   touchOpenLoops(maxosHome, closedPhones);
 
-  return { written: lines.length };
+  // Process [DECISION] entries that drop loops permanently. The chat session
+  // writes these per SOUL.md when Mark says "drop X" / "kill that thread" /
+  // "X is over". This step removes matching open-loops.json entries so the
+  // next brief never re-raises them. Runs every 15 minutes via the watcher.
+  const dropped = applyDropDecisionsToLoops(maxosHome, now);
+
+  // P0-1 (Round O+): pick up [FACT] new-loop lines emitted by the LLM-
+  // driven shutdown-debrief. The LLM no longer edits open-loops.json
+  // directly (race with the watchers/reconciler — see audit P0-1); it
+  // writes FACT lines and this deterministic pass adds them atomically.
+  const factResult = applyNewLoopFactsFromClosures(maxosHome, now);
+
+  // Round O: prune open-loops.json against the persistent dropped-loops.md.
+  // The reconciler appends a tombstone there whenever a Google Task is
+  // deleted; this pass catches LLM-driven re-adds within 15 minutes — much
+  // shorter than the daemon-startup-only prune that used to be the only
+  // safety net. closure-watcher already runs every 15 min, so this rides
+  // the same cadence rather than adding a new cron.
+  const prunedAgainstDropped = pruneAgainstPersistentTombstones(maxosHome);
+
+  return {
+    written: lines.length,
+    dropped: [...dropped.removed, ...prunedAgainstDropped],
+    addedFromFacts: factResult.added,
+    blockedFromFacts: factResult.blockedByTombstone,
+  };
+}
+
+function pruneAgainstPersistentTombstones(maxosHome: string): string[] {
+  const droppedTopics = loadDroppedTopics(maxosHome);
+  // Audit P0-2: also pull exact loop ids from `(loop:xxx)` markers in
+  // dropped-loops.md. Keyword matching alone misses re-adds where the
+  // LLM kept the same id but reworded the topic; exact-id match is
+  // bullet-proof for those cases.
+  const droppedIds = loadDroppedLoopIds(maxosHome);
+  if (droppedTopics.length === 0 && droppedIds.length === 0) return [];
+  const loops = loadOpenLoops(maxosHome);
+  if (loops.length === 0) return [];
+  const { remaining, pruned } = pruneOpenLoopsAgainstDropped(
+    loops,
+    droppedTopics,
+    droppedIds,
+  );
+  if (pruned.length === 0) return [];
+  saveOpenLoops(maxosHome, remaining);
+  return pruned.map((p) => p.id);
 }
 
 // CLI entry point — `node dist/src/closure-watcher.js [--hours N]`
@@ -212,7 +277,18 @@ if (isCLI) {
   const hours = hoursArg >= 0 ? Number(process.argv[hoursArg + 1]) : 0.25;
   runClosureWatcher({ hours }).then((r) => {
     if (process.env.MAXOS_CLOSURE_VERBOSE) {
-      console.log(`closure-watcher: wrote ${r.written} entries`);
+      console.log(
+        `closure-watcher: wrote ${r.written} entries, dropped ${r.dropped.length} loops, added-from-FACT ${r.addedFromFacts.length}, blocked-by-tombstone ${r.blockedFromFacts.length}`,
+      );
+    }
+    if (r.dropped.length > 0) {
+      console.log(`closure-watcher: dropped loops via [DECISION]: ${r.dropped.join(", ")}`);
+    }
+    if (r.addedFromFacts.length > 0) {
+      console.log(`closure-watcher: added loops via [FACT] new-loop: ${r.addedFromFacts.join(", ")}`);
+    }
+    if (r.blockedFromFacts.length > 0) {
+      console.log(`closure-watcher: BLOCKED loops via tombstone: ${r.blockedFromFacts.join(", ")}`);
     }
   }).catch((err) => {
     console.error("closure-watcher failed:", err instanceof Error ? err.message : err);

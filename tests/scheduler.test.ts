@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseHeartbeat, isInProtectedWindow } from "../src/scheduler.js";
+import { parseHeartbeat, isInProtectedWindow, buildTaskFailureLogEntry } from "../src/scheduler.js";
 
 describe("parseHeartbeat", () => {
   it("parses 'Every N minutes' format", () => {
@@ -105,6 +105,100 @@ describe("parseHeartbeat", () => {
     const tasks = parseHeartbeat(md);
     assert.equal(tasks[0].timeout, undefined);
   });
+
+  it("preserves enough slug for full task names like morning-brew", () => {
+    const md = "## 15 6 * * 0-5\n- Run morning brew: read tasks/morning-brew.md and execute every step";
+    const tasks = parseHeartbeat(md);
+    assert.equal(tasks.length, 1);
+    assert.ok(tasks[0].name.length <= 100, "slug should fit in 100 chars");
+    assert.ok(
+      tasks[0].name.endsWith("step"),
+      "slug should end on a complete word, not mid-truncate to 'execu' as it did when the limit was 50",
+    );
+  });
+
+  it("pins the slug truncation at exactly 100 chars (regression for ISSUE-010)", () => {
+    // Build a prompt whose slug is exactly 120 chars before truncation. If
+    // the limit is loosened past 120, the assertion fails. If tightened
+    // below 100, the assertion fails. Pins both directions.
+    const longBody = "Run an extra long task name that contains many many many many words to push the slug well past one hundred chars";
+    const md = `## 15 6 * * 0-5\n- ${longBody}`;
+    const tasks = parseHeartbeat(md);
+    const slug = tasks[0].name;
+    assert.equal(slug.length, 100, `expected slug truncated to exactly 100, got ${slug.length}`);
+    // Sanity: this slug at the OLD 50-limit would have been truncated even shorter
+    assert.ok(longBody.length > 100, "test setup: prompt must be long enough to truncate");
+  });
+
+  it("does not truncate slugs already shorter than 100 (regression for ISSUE-010)", () => {
+    const md = "## 0 6 * * *\n- Short prompt";
+    const tasks = parseHeartbeat(md);
+    assert.equal(tasks[0].name, "short-prompt");
+    assert.ok(tasks[0].name.length < 100);
+  });
+});
+
+describe("Scheduler.pruneStaleState", () => {
+  it("removes failures/disabled/lastRun entries not in currentTaskNames", async () => {
+    const { Scheduler } = await import("../src/scheduler.js");
+    const noop = async () => "";
+    const noopDeliver = () => {};
+    const noopAlert = () => {};
+    const sched = new Scheduler(3, 3, [], noop, noopDeliver, noopAlert);
+    sched.loadState({
+      failures: { "current-task": 2, "stale-old-slug": 3 },
+      disabled: ["stale-old-slug", "current-task"],
+      lastRun: { "current-task": 1000, "stale-old-slug": 500 },
+    });
+    const pruned = sched.pruneStaleState(new Set(["current-task"]));
+    assert.deepEqual(pruned.failuresPruned, ["stale-old-slug"]);
+    assert.deepEqual(pruned.disabledPruned, ["stale-old-slug"]);
+    assert.deepEqual(pruned.lastRunPruned, ["stale-old-slug"]);
+    const after = sched.getState();
+    assert.deepEqual(after.failures, { "current-task": 2 });
+    assert.deepEqual(after.disabled, ["current-task"]);
+    assert.deepEqual(after.lastRun, { "current-task": 1000 });
+  });
+
+  it("returns empty pruned arrays when nothing is stale", async () => {
+    const { Scheduler } = await import("../src/scheduler.js");
+    const sched = new Scheduler(3, 3, [], async () => "", () => {}, () => {});
+    sched.loadState({
+      failures: { a: 1 },
+      disabled: [],
+      lastRun: { a: 100 },
+    });
+    const pruned = sched.pruneStaleState(new Set(["a", "b"]));
+    assert.deepEqual(pruned.failuresPruned, []);
+    assert.deepEqual(pruned.disabledPruned, []);
+    assert.deepEqual(pruned.lastRunPruned, []);
+  });
+
+  it("regression: prevents the orphan-slug accumulation that bit /status today", async () => {
+    // After scheduler.ts slug truncation bumped 50 → 100, state.json carried
+    // both old-50char and new-100char slugs. The new daemon's task list only
+    // has the 100-char version; the old slug is orphan. Without pruning it
+    // would surface as "circuit-breaker disabled" in /status forever.
+    const { Scheduler } = await import("../src/scheduler.js");
+    const sched = new Scheduler(3, 3, [], async () => "", () => {}, () => {});
+    sched.loadState({
+      failures: {
+        "run-notion-sync-execute-export-nvmdirhomenvm-s-nvm": 3, // OLD (50 chars)
+        "run-notion-sync-execute-export-nvmdirhomenvm-s-nvmdirnvmsh-nvmdirnvmsh-cd-maxosworkspaceservicesnoti": 0,
+      },
+      disabled: ["run-notion-sync-execute-export-nvmdirhomenvm-s-nvm"],
+      lastRun: {
+        "run-notion-sync-execute-export-nvmdirhomenvm-s-nvmdirnvmsh-nvmdirnvmsh-cd-maxosworkspaceservicesnoti": Date.now(),
+      },
+    });
+    const currentTasks = new Set([
+      "run-notion-sync-execute-export-nvmdirhomenvm-s-nvmdirnvmsh-nvmdirnvmsh-cd-maxosworkspaceservicesnoti",
+    ]);
+    sched.pruneStaleState(currentTasks);
+    const after = sched.getState();
+    assert.equal(Object.keys(after.failures).length, 1);
+    assert.equal(after.disabled.length, 0);
+  });
 });
 
 describe("isInProtectedWindow", () => {
@@ -136,5 +230,38 @@ describe("isInProtectedWindow", () => {
     const windows = [{ name: "family-time", day: "saturday" }];
     const date = new Date("2026-03-25T12:00:00");
     assert.equal(isInProtectedWindow(date, windows), false);
+  });
+});
+
+describe("buildTaskFailureLogEntry (Round Q observability fix)", () => {
+  it("includes the error message — silent swallowing was the Monday-token-storm bug", () => {
+    // Pre-fix: scheduler:task_failed only logged { task, failures }. When
+    // claude CLI started returning 401 on Monday morning, the daemon log
+    // showed 50+ "task_failed" lines with no clue WHY. Mark and I had to
+    // run the CLI manually to discover the auth error. Now the err.message
+    // is in every log line so a tail of daemon.log surfaces the cause.
+    const err = new Error(
+      'oneShot exited with code 1: Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"Invalid authentication credentials"}}',
+    );
+    const entry = buildTaskFailureLogEntry("morning-brief", 1, err);
+    assert.equal(entry.task, "morning-brief");
+    assert.equal(entry.failures, 1);
+    assert.match(entry.error, /401/);
+    assert.match(entry.error, /authentication/i);
+  });
+
+  it("handles non-Error throwables (string, undefined, etc.) without crashing", () => {
+    assert.equal(buildTaskFailureLogEntry("x", 2, "raw string error").error, "raw string error");
+    assert.equal(buildTaskFailureLogEntry("x", 1, undefined).error, "undefined");
+    assert.equal(buildTaskFailureLogEntry("x", 1, null).error, "null");
+    assert.equal(buildTaskFailureLogEntry("x", 1, 42).error, "42");
+  });
+
+  it("truncates pathologically long error strings so log lines stay parseable", () => {
+    const longErr = new Error("X".repeat(5000));
+    const entry = buildTaskFailureLogEntry("x", 1, longErr);
+    // The whole entry is JSON-logged; keep error field bounded so a
+    // single bad task doesn't blow up the log line size budget.
+    assert.ok(entry.error.length <= 1000, `error should be truncated, got ${entry.error.length}`);
   });
 });

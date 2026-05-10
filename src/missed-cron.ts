@@ -68,6 +68,12 @@ export function detectMissedRuns(
 /**
  * Format the missed-runs list as a single Telegram-friendly message.
  * Empty input → empty string (so the caller can skip sending nothing).
+ *
+ * Important: this fires only on daemon startup (or hot-reload). A task is
+ * "missed" if its prev() expected fire is in the catch-up window AND lastRun
+ * is older than that fire. If the daemon JUST restarted while a task was
+ * mid-execution, lastRun won't be updated yet — so callers should only fire
+ * this check when they're confident the daemon is in a steady state.
  */
 export function formatMissedAlert(missed: MissedRun[]): string {
   if (missed.length === 0) return "";
@@ -91,4 +97,22 @@ export function formatMissedAlert(missed: MissedRun[]): string {
   lines.push("");
   lines.push("Run any missed task manually: `maxos run-task <name>` — it'll get the full deterministic kit.");
   return lines.join("\n");
+}
+
+/**
+ * Filter out tasks whose prev() fire was within `recentFireGraceMs` of `now`.
+ * The original detection treats any task without an updated lastRun as
+ * missed, but that produces false positives during daemon restarts mid-fire.
+ * Calling this filter after `detectMissedRuns` and before alert generation
+ * removes flag-mid-flight cases that would otherwise spam the user.
+ */
+export function filterRecentFireFalsePositives(
+  missed: MissedRun[],
+  now: Date,
+  recentFireGraceMs: number = 5 * 60_000,
+): MissedRun[] {
+  return missed.filter((m) => {
+    const fireMs = new Date(m.scheduledFireTime).getTime();
+    return now.getTime() - fireMs > recentFireGraceMs;
+  });
 }

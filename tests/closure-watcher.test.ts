@@ -12,6 +12,7 @@ import {
   formatClosureLine,
   filterNewEntries,
   appendClosures,
+  runClosureWatcher,
   type OutgoingMessage,
   type ClosureMatch,
 } from "../src/closure-watcher.js";
@@ -201,5 +202,100 @@ describe("appendClosures", () => {
     appendClosures(home, date, []);
     const path = join(home, "workspace", "memory", "closures-2026-04-21.md");
     assert.equal(existsSync(path), false);
+  });
+});
+
+describe("runClosureWatcher — periodic prune against dropped-loops.md (Round O)", () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "watcher-prune-"));
+    mkdirSync(join(home, "workspace", "memory"), { recursive: true });
+    mkdirSync(join(home, "vault"), { recursive: true });  // empty vault for loadDossiers
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("prunes open-loops.json against dropped-loops.md on every cycle (catches LLM re-adds within 15 min)", async () => {
+    // Bug scenario: Mark deletes the KCR Google Task on Tuesday. Reconciler
+    // writes to dropped-loops.md. On Wednesday afternoon, the granola sync
+    // surfaces a meeting where KCR comes up; the LLM-driven debrief
+    // re-extracts the loop with a slightly-different id and writes it back
+    // to open-loops.json. Without periodic prune, that loop survives until
+    // daemon restart. With periodic prune, the next 15-minute cycle kills
+    // it before the morning brief sees it.
+    writeFileSync(
+      join(home, "workspace", "memory", "dropped-loops.md"),
+      `# Dropped Loops
+
+## Active Drops
+
+- **KCR wholesale ordering system v1** (Mark) — dropped 2026-04-30 via Google Task deletion. Reason: deleted. (loop:kcr-wholesale-ordering-v1)
+`,
+    );
+    writeFileSync(
+      join(home, "workspace", "memory", "open-loops.json"),
+      JSON.stringify(
+        [
+          {
+            id: "kcr-wholesale-rebuild-v2",  // different id, same topic family
+            topic: "KCR wholesale ordering rebuild",
+            person: "Mark",
+            firstSeen: "2026-05-01",
+            lastUpdated: "2026-05-01",
+          },
+          {
+            id: "unrelated-loop",
+            topic: "Unrelated topic",
+            firstSeen: "2026-05-01",
+            lastUpdated: "2026-05-01",
+          },
+        ],
+        null,
+        2,
+      ),
+    );
+
+    await runClosureWatcher({
+      maxosHome: home,
+      vaultRoot: join(home, "vault"),
+      hours: 0.25,
+      imessageScan: "/nonexistent/imessage-scan",  // forces fetchOutgoingDms to return []
+      now: new Date("2026-05-01T12:00:00"),
+    });
+
+    const after = JSON.parse(
+      readFileSync(join(home, "workspace", "memory", "open-loops.json"), "utf-8"),
+    );
+    assert.equal(after.length, 1, "KCR re-add should be pruned, leaving only the unrelated loop");
+    assert.equal(after[0].id, "unrelated-loop");
+  });
+
+  it("does not touch open-loops.json when dropped-loops.md is missing", async () => {
+    // Defensive: if there's no dropped-loops.md, the prune is a no-op.
+    writeFileSync(
+      join(home, "workspace", "memory", "open-loops.json"),
+      JSON.stringify(
+        [{ id: "x", topic: "X", firstSeen: "2026-05-01", lastUpdated: "2026-05-01" }],
+        null,
+        2,
+      ),
+    );
+
+    await runClosureWatcher({
+      maxosHome: home,
+      vaultRoot: join(home, "vault"),
+      hours: 0.25,
+      imessageScan: "/nonexistent/imessage-scan",
+      now: new Date("2026-05-01T12:00:00"),
+    });
+
+    const after = JSON.parse(
+      readFileSync(join(home, "workspace", "memory", "open-loops.json"), "utf-8"),
+    );
+    assert.equal(after.length, 1);
+    assert.equal(after[0].id, "x");
   });
 });

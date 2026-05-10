@@ -14,13 +14,37 @@ import { transcribeAudio } from "./utils/transcribe.js";
 import { consumeRestartMarker } from "./restart-marker.js";
 import { buildMemoryContext } from "./memory.js";
 import { buildSystemFacts, formatSystemFacts } from "./system-facts.js";
-import { loadDroppedTopics, stripDroppedFromOutput, pruneOpenLoopsAgainstDropped } from "./dropped-loops-filter.js";
+import {
+  loadDroppedTopics,
+  loadDroppedLoopIds,
+  stripDroppedFromOutput,
+  pruneOpenLoopsAgainstDropped,
+} from "./dropped-loops-filter.js";
 import { loadOpenLoops, saveOpenLoops } from "./loop-reconciler.js";
 import { fetchAuthoritativeGhosted, stripInvalidGhosted } from "./ghosted-filter.js";
 import { classifyTaskKit } from "./memory.js";
-import { detectMissedRuns, formatMissedAlert, type TaskLastRunInfo } from "./missed-cron.js";
+import {
+  detectMissedRuns,
+  filterRecentFireFalsePositives,
+  formatMissedAlert,
+  type TaskLastRunInfo,
+} from "./missed-cron.js";
+import { buildReplyContext } from "./reply-context.js";
+import { buildChatContext } from "./chat-context.js";
+import { buildHealthSummary, buildHealthDetail } from "./health-summary.js";
+import { summarizeViolations, formatSummary as formatVoiceSummary } from "./voice-violations-summary.js";
+import {
+  schemaForTask,
+  validateAgainstSchema,
+  logSchemaViolation,
+  isSchemaFailure,
+} from "./brief-schema.js";
+import { shouldAttemptRecovery, recoverFromVault } from "./brief-recovery.js";
+import { buildDigestMessage } from "./maxos-digest.js";
+import { runAllChecks as runDoctorChecks } from "./doctor.js";
 
 const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".maxos");
+const OUTBOUND_IDS_PATH = join(MAXOS_HOME, "workspace", "memory", "outbound-ids.jsonl");
 
 /**
  * Strip early-delivered ack text from the final response to avoid duplication.
@@ -102,6 +126,8 @@ export class Gateway {
   private heartbeatPath: string = "";
   /** Current parsed HEARTBEAT tasks — used by missed-cron detection. */
   private currentTasks: import("./scheduler.js").HeartbeatTask[] = [];
+  /** Daemon start time (ms since epoch) — used by /status command for uptime. */
+  private daemonStartTime: number = Date.now();
 
   constructor(private readonly foreground: boolean) {
     if (foreground) enableConsoleLogging();
@@ -124,6 +150,7 @@ export class Gateway {
   }
 
   async start(): Promise<void> {
+    this.daemonStartTime = Date.now();
     logger.info("gateway:starting", { home: MAXOS_HOME });
     this.state.load();
 
@@ -132,9 +159,10 @@ export class Gateway {
     // Loop Reconciliation never surfaces a retired item.
     try {
       const dropped = loadDroppedTopics(MAXOS_HOME);
-      if (dropped.length > 0) {
+      const droppedIds = loadDroppedLoopIds(MAXOS_HOME);
+      if (dropped.length > 0 || droppedIds.length > 0) {
         const loops = loadOpenLoops(MAXOS_HOME);
-        const { remaining, pruned } = pruneOpenLoopsAgainstDropped(loops, dropped);
+        const { remaining, pruned } = pruneOpenLoopsAgainstDropped(loops, dropped, droppedIds);
         if (pruned.length > 0) {
           saveOpenLoops(MAXOS_HOME, remaining);
           logger.info("gateway:pruned_dropped_loops", {
@@ -253,6 +281,24 @@ export class Gateway {
     this.scheduler.schedule(tasks);
     this.currentTasks = tasks;
     logger.info("gateway:scheduler_loaded", { taskCount: tasks.length });
+
+    // Prune scheduler state (failures, disabled, lastRun) of any keys that
+    // don't correspond to a currently-registered task. Keeps state.json
+    // clean across slug-truncation changes and removed heartbeat entries
+    // — without this, /status surfaces orphan-slug failures/disables forever.
+    const taskNames = new Set(tasks.map((t) => t.name));
+    const pruned = this.scheduler.pruneStaleState(taskNames);
+    const totalPruned =
+      pruned.failuresPruned.length +
+      pruned.disabledPruned.length +
+      pruned.lastRunPruned.length;
+    if (totalPruned > 0) {
+      logger.info("gateway:pruned_stale_scheduler_state", {
+        failures: pruned.failuresPruned.length,
+        disabled: pruned.disabledPruned.length,
+        lastRun: pruned.lastRunPruned.length,
+      });
+    }
   }
 
   /**
@@ -271,7 +317,16 @@ export class Gateway {
       silent: t.silent ?? false,
       lastRun: state.lastRun[t.name],
     }));
-    const missed = detectMissedRuns(infos, new Date(), 6);
+    const rawMissed = detectMissedRuns(infos, new Date(), 6);
+    // Filter out tasks whose expected fire was within 5 min of now — those
+    // are likely mid-execution from before the daemon restart, and lastRun
+    // hasn't propagated yet. Without this filter, restarting the daemon
+    // during a scheduled fire produces a false-positive missed_task warning.
+    const missed = filterRecentFireFalsePositives(rawMissed, new Date(), 5 * 60_000);
+    const suppressed = rawMissed.length - missed.length;
+    if (suppressed > 0) {
+      logger.info("gateway:missed_cron_suppressed_recent", { count: suppressed });
+    }
     if (missed.length === 0) {
       logger.info("gateway:missed_cron_check", { missed: 0 });
       return;
@@ -525,6 +580,101 @@ export class Gateway {
 
     const channel = this.channels.find((c) => c.name === msg.channelName);
 
+    // /status — daemon-intercept, mobile-friendly health dashboard. Skip the
+    // LLM round-trip entirely; just read state files and reply directly.
+    // Subcommands:
+    //   /status            — 5-line summary (default)
+    //   /status detail     — full breakdown
+    //   /status loops      — open loops list
+    //   /status violations — voice violations 24h
+    // /digest — on-demand version of the daily 21:25 digest. Same content,
+    // any time. Single-line command, no subcommands.
+    if (channel && /^\s*\/digest\s*$/i.test(msg.text ?? "")) {
+      try {
+        const doctorResults = await runDoctorChecks({ maxosHome: MAXOS_HOME, fast: true });
+        const message = buildDigestMessage({
+          maxosHome: MAXOS_HOME,
+          now: new Date(),
+          doctorResults,
+        });
+        await channel.send(msg.conversationId, { text: message, format: "text" });
+      } catch (err) {
+        logger.error("gateway:digest_failed", { error: err instanceof Error ? err.message : String(err) });
+        await channel.send(msg.conversationId, {
+          text: `/digest failed: ${err instanceof Error ? err.message : String(err)}`,
+          format: "text",
+        }).catch(() => {});
+      }
+      return;
+    }
+
+    const statusMatch = (msg.text ?? "").trim().match(/^\/status(?:\s+(\w+))?\s*$/i);
+    if (channel && statusMatch) {
+      const sub = (statusMatch[1] || "").toLowerCase();
+      try {
+        let reply: string;
+        switch (sub) {
+          case "":
+          case "summary":
+            reply = buildHealthSummary({ maxosHome: MAXOS_HOME, daemonStartTime: this.daemonStartTime });
+            break;
+          case "detail":
+          case "full":
+            reply = buildHealthDetail({ maxosHome: MAXOS_HOME, daemonStartTime: this.daemonStartTime });
+            break;
+          case "loops": {
+            const loopsPath = join(MAXOS_HOME, "workspace", "memory", "open-loops.json");
+            if (!existsSync(loopsPath)) {
+              reply = "🔄 No open loops file. (treated as empty)";
+            } else {
+              const raw = readFileSync(loopsPath, "utf-8");
+              try {
+                const loops = JSON.parse(raw) as Array<{ id: string; topic: string; person?: string; firstSeen?: string; notes?: string }>;
+                if (loops.length === 0) {
+                  reply = "🔄 No open loops.";
+                } else {
+                  const lines = [`🔄 *Open loops* (${loops.length})`, ""];
+                  for (const l of loops) {
+                    const who = l.person ? ` — ${l.person}` : "";
+                    const seen = l.firstSeen ? ` (since ${l.firstSeen})` : "";
+                    lines.push(`• *${l.topic}*${who}${seen}`);
+                    if (l.notes) lines.push(`  ${l.notes}`);
+                  }
+                  reply = lines.join("\n");
+                }
+              } catch {
+                reply = "🔄 open-loops.json is corrupt — run /status detail";
+              }
+            }
+            break;
+          }
+          case "violations": {
+            const vPath = join(MAXOS_HOME, "workspace", "memory", "voice-violations.jsonl");
+            if (!existsSync(vPath)) {
+              reply = "Voice violations: no log yet (clean window).";
+            } else {
+              const since = Date.now() - 24 * 3600_000;
+              const summary = summarizeViolations(readFileSync(vPath, "utf-8"), since);
+              reply = formatVoiceSummary(summary);
+            }
+            break;
+          }
+          default:
+            reply = `Unknown /status subcommand: \`${sub}\`.\nKnown: /status, /status detail, /status loops, /status violations`;
+        }
+        await channel.send(msg.conversationId, { text: reply, format: "text" });
+      } catch (err) {
+        logger.error("gateway:status_failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        await channel.send(msg.conversationId, {
+          text: `/status failed: ${err instanceof Error ? err.message : String(err)}`,
+          format: "text",
+        }).catch(() => {});
+      }
+      return;
+    }
+
     const sessionName = this.sessions.route(msg);
     logger.info("gateway:message", { from: msg.senderId, session: sessionName });
 
@@ -566,10 +716,22 @@ export class Gateway {
     // Without this, concurrent messages on the same session stack handlers —
     // each handler has its own firstTextSent=false, so the same text event
     // triggers multiple sends, causing duplicate Telegram messages.
+    //
+    // KNOWN LIMITATION (ISSUE-009): this fixes duplicate-into-same-conversation
+    // but NOT cross-conversation leak. If two conversations ever share a
+    // session (multi-user setup, identity link), a handler registered for
+    // conv A could receive the early-text events from a still-in-flight
+    // send() that started for conv B, and the prefix would be sent to the
+    // wrong conversation. Single-user setups (Mark today) cannot trigger
+    // this because both would-be conversations resolve to the same
+    // conversationId. Revisit if multi-user or shared sessions are added.
     session.removeAllListeners("text");
     session.on("text", earlyTextHandler);
 
-    const prompt = await this.buildPrompt(msg);
+    const userPrompt = await this.buildPrompt(msg);
+    const replyContext = buildReplyContext(msg, OUTBOUND_IDS_PATH);
+    const chatContext = buildChatContext(MAXOS_HOME);
+    const prompt = [chatContext, replyContext, userPrompt].filter(Boolean).join("\n\n");
     const responseTimeout = this.config.engine.responseTimeout ?? 600_000;
 
     // send() returns a Promise that resolves when THIS message's response
@@ -707,6 +869,59 @@ export class Gateway {
           bytesRemoved: filtered.length - afterGhosted.length,
         });
         filtered = afterGhosted;
+      }
+    }
+
+    // Filter 3: schema validation (brief / debrief / brew only).
+    // Doesn't strip content — just LOGS missing required sections so we can
+    // detect when the LLM drops a section and silently delivers a malformed
+    // brief. Mark sees the violation count via /status (future) or by reading
+    // brief-issues.jsonl directly.
+    //
+    // Filter 4 (Round T, 2026-05-07): catastrophic-failure auto-recovery.
+    // When the LLM produces a tiny / mostly-empty output (the 125-char
+    // "Sync clean" garbage that ate Mark's debrief 2026-05-07), the schema
+    // validator detects 3+ missing required sections OR <500 chars with
+    // 1+ missing. We then read the long-form vault file the LLM saved
+    // during Step 6, transform it to highlight-reel format, and REPLACE
+    // the LLM's output with the recovered version. Logs both events.
+    const schema = schemaForTask(taskName);
+    if (schema) {
+      const violation = validateAgainstSchema(filtered, schema, taskName);
+      if (violation.missingRequired.length > 0 || violation.missingOptional.length > 0) {
+        logSchemaViolation(
+          join(MAXOS_HOME, "workspace", "memory", "brief-issues.jsonl"),
+          violation,
+        );
+        if (isSchemaFailure(violation)) {
+          logger.warn("gateway:oneshot:schema_failure", {
+            task: taskName,
+            missing: violation.missingRequired,
+            chars: violation.totalChars,
+          });
+        }
+      }
+      if (shouldAttemptRecovery(violation)) {
+        const recovery = recoverFromVault(MAXOS_HOME, taskName, new Date());
+        if (recovery.recovered && recovery.content) {
+          logger.warn("gateway:oneshot:recovery_applied", {
+            task: taskName,
+            originalChars: violation.totalChars,
+            recoveredChars: recovery.content.length,
+            vaultPath: recovery.vaultPath,
+          });
+          // Prepend a banner so Mark knows this is the recovered version.
+          // Source label is "saved state" so it covers both the brief/debrief
+          // vault file recovery and the brew archive-snapshot recovery.
+          const banner = `⚠️ Recovered from saved state — original LLM output was malformed (${violation.totalChars} chars, missing ${violation.missingRequired.join(", ")})\n\n`;
+          filtered = banner + recovery.content;
+        } else {
+          logger.warn("gateway:oneshot:recovery_failed", {
+            task: taskName,
+            reason: recovery.reason,
+            vaultPath: recovery.vaultPath,
+          });
+        }
       }
     }
 
