@@ -5,3 +5,5 @@ dist/
 state.json
 .DS_Store
 .worktrees/
+.claude/worktrees/
+.claude/qa-passed
