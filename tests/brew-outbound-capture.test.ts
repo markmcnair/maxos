@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { recordOutboundId, findLatestForTask } from "../src/brew-outbound-capture.js";
+import { recordOutboundId, findLatestForTask, findOutboundForMessageId } from "../src/brew-outbound-capture.js";
 
 describe("recordOutboundId", () => {
   let tmp: string;
@@ -53,5 +53,33 @@ describe("findLatestForTask", () => {
     const content = `\n${JSON.stringify({ task: "morning-brew", messageId: "m1", ts: 1 })}\n\nnot-json\n`;
     const r = findLatestForTask("", "morning-brew", content);
     assert.equal(r?.messageId, "m1");
+  });
+});
+
+describe("findOutboundForMessageId", () => {
+  it("returns the matching record by messageId", () => {
+    const content = [
+      JSON.stringify({ task: "morning-brew", messageId: "m1", ts: 1 }),
+      JSON.stringify({ task: "morning-brief", messageId: "m2", ts: 2 }),
+      JSON.stringify({ task: "shutdown-debrief", messageId: "m3", ts: 3 }),
+    ].join("\n") + "\n";
+    const r = findOutboundForMessageId(content, "m2");
+    assert.equal(r?.task, "morning-brief");
+    assert.equal(r?.ts, 2);
+  });
+
+  it("returns null when no match", () => {
+    const content = JSON.stringify({ task: "morning-brew", messageId: "m1", ts: 1 }) + "\n";
+    assert.equal(findOutboundForMessageId(content, "missing"), null);
+  });
+
+  it("tolerates blank lines and corrupt JSON", () => {
+    const content = `\n${JSON.stringify({ task: "morning-brew", messageId: "mX", ts: 1 })}\n\nnot-json\n`;
+    const r = findOutboundForMessageId(content, "mX");
+    assert.equal(r?.task, "morning-brew");
+  });
+
+  it("returns null on empty input", () => {
+    assert.equal(findOutboundForMessageId("", "m1"), null);
   });
 });

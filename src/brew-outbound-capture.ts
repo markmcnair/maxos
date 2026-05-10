@@ -27,3 +27,17 @@ export function findLatestForTask(
   }
   return latest;
 }
+
+export function findOutboundForMessageId(
+  linesContent: string,
+  messageId: string,
+): OutboundRecord | null {
+  for (const line of linesContent.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const r = JSON.parse(line) as OutboundRecord;
+      if (r.messageId === messageId) return r;
+    } catch { continue; }
+  }
+  return null;
+}
