@@ -1,10 +1,10 @@
 # Heartbeat Tasks
 
-## Every 45 minutes [silent]
+## Every 45 minutes [silent] [model:sonnet]
 - If there has been any substantive work, decisions, or conversations since the last journal entry, write a brief checkpoint to today's daily journal (memory/YYYY-MM-DD.md). Include what happened, decisions made, current state. Keep under 200 words. Append only. If nothing meaningful has happened, do nothing — do NOT write empty "awaiting direction" entries.
 
-## 55 5 * * * [silent]
-- Run QMD maintenance: execute `cd ~/.maxos/workspace && qmd update && qmd embed 2>&1`. Report errors only.
+## 55 5 * * * [script] [silent] [timeout:5m]
+- cd ~/.maxos/workspace && qmd update && qmd embed 2>&1
 
 {{#if customTasks}}
 {{customTasks}}
