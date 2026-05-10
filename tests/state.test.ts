@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { StateStore } from "../src/state.js";
-import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -73,5 +73,60 @@ describe("StateStore", () => {
     const lines = readFileSync(join(dir, "crash.log"), "utf-8").trim().split("\n");
     assert.equal(lines.length, 3);
     assert.ok(JSON.parse(lines[0]).event === "event_2"); // kept last 3
+  });
+
+  it("recovers from corrupt JSON by falling back to empty state", () => {
+    // Simulate a partial-write disaster by writing garbage to state.json
+    writeFileSync(join(dir, "state.json"), "{ this is not valid json }");
+    const store2 = new StateStore(dir);
+    const loaded = store2.load();
+    // Falls back cleanly — no throw, sessions empty, scheduler reset
+    assert.deepEqual(loaded.sessions, {});
+    assert.deepEqual(loaded.scheduler, { failures: {}, disabled: [], lastRun: {} });
+  });
+
+  it("`update` callback mutates current state in place", () => {
+    store.load();
+    store.update((s) => {
+      s.scheduler.lastRun["task-x"] = 1234567890;
+      s.scheduler.disabled.push("bad-task");
+    });
+    const cur = store.current;
+    assert.equal(cur.scheduler.lastRun["task-x"], 1234567890);
+    assert.deepEqual(cur.scheduler.disabled, ["bad-task"]);
+  });
+
+  it("`update` refreshes the timestamp", async () => {
+    store.load();
+    const before = store.current.timestamp;
+    // ensure time advances
+    await new Promise((r) => setTimeout(r, 5));
+    store.update((s) => { s.sessions["x"] = { claudeSessionId: "y", lastActivity: 0, messageCount: 0 }; });
+    assert.ok(store.current.timestamp > before);
+  });
+
+  it("getLastJournalEvent returns null on empty journal file", () => {
+    writeFileSync(join(dir, "crash.log"), "");
+    assert.equal(store.getLastJournalEvent(), null);
+  });
+
+  it("getLastJournalEvent returns null on corrupt last line", () => {
+    writeFileSync(join(dir, "crash.log"), `{"ts":1,"event":"ok"}\nthis is not json\n`);
+    assert.equal(store.getLastJournalEvent(), null);
+  });
+
+  it("journalTrim is a no-op when journal has fewer entries than max", () => {
+    store.journalAppend("only-event", {});
+    store.journalTrim(10);
+    const lines = readFileSync(join(dir, "crash.log"), "utf-8").trim().split("\n");
+    assert.equal(lines.length, 1);
+  });
+
+  it("regression: corrupt state.json doesn't crash daemon startup", () => {
+    // The whole point of state.json error tolerance — a half-written file
+    // (kill -9 mid-flush) must not lock the daemon out of starting.
+    writeFileSync(join(dir, "state.json"), '{"version":1,"sessions":');
+    const store2 = new StateStore(dir);
+    assert.doesNotThrow(() => store2.load());
   });
 });

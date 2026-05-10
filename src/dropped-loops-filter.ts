@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { OpenLoop } from "./loop-reconciler.js";
 
 /**
@@ -144,18 +144,47 @@ export function stripDroppedFromOutput(output: string, droppedTopics: string[]):
  * Prune open-loops.json entries whose topic or person matches any
  * dropped-loops entry. Used on daemon startup / reconciliation so the
  * structured loop store and the dropped-list stay consistent.
+ *
+ * Two matching paths, applied in order:
+ *  1. Exact id match against `droppedLoopIds` — bullet-proof against
+ *     the LLM re-adding the same id (which is what
+ *     `(loop:xxx)` markers in dropped-loops.md let us track).
+ *  2. Keyword match against `droppedTopics` (multi-word against full
+ *     haystack, single-word against id/person only — Joey-Cook regression
+ *     guard).
+ *
+ * Either match prunes the loop. Tested in dropped-loops-filter.test.ts.
  */
 export function pruneOpenLoopsAgainstDropped(
   loops: OpenLoop[],
   droppedTopics: string[],
+  droppedLoopIds: string[] = [],
 ): { remaining: OpenLoop[]; pruned: OpenLoop[] } {
-  if (droppedTopics.length === 0) return { remaining: loops, pruned: [] };
+  if (droppedTopics.length === 0 && droppedLoopIds.length === 0) {
+    return { remaining: loops, pruned: [] };
+  }
+  const idSet = new Set(droppedLoopIds);
   const keywords = buildTopicKeywords(droppedTopics);
+  // Multi-word keywords (e.g. "torie microdeposit") match against the full
+  // haystack — both words must be present, so false-positives are unlikely.
+  // Single-word keywords (e.g. "project", "robert") are way too generic to
+  // match against free-text topic/notes — Joey Cook's "Eden Project Mission
+  // Partner" got pruned by "Project Zero" until we scoped these. So
+  // single-word keywords now match ONLY against id + person, not topic.
+  const multiWordKws = keywords.filter((k) => k.includes(" "));
+  const singleWordKws = keywords.filter((k) => !k.includes(" "));
   const remaining: OpenLoop[] = [];
   const pruned: OpenLoop[] = [];
   for (const loop of loops) {
-    const haystack = [loop.topic, loop.person ?? "", loop.notes ?? ""].join(" ");
-    if (lineMatchesAnyKeyword(haystack, keywords)) {
+    if (idSet.has(loop.id)) {
+      pruned.push(loop);
+      continue;
+    }
+    const fullHaystack = [loop.topic, loop.person ?? "", loop.notes ?? ""].join(" ");
+    const idPersonHaystack = `${loop.id} ${loop.person ?? ""}`;
+    const multiHit = lineMatchesAnyKeyword(fullHaystack, multiWordKws);
+    const singleHit = lineMatchesAnyKeyword(idPersonHaystack, singleWordKws);
+    if (multiHit || singleHit) {
       pruned.push(loop);
     } else {
       remaining.push(loop);
@@ -176,4 +205,113 @@ export function loadDroppedTopics(maxosHome: string): string[] {
   } catch {
     return [];
   }
+}
+
+const LOOP_ID_MARKER_RE = /\(loop:([a-z0-9._\-]+)\)/gi;
+
+/**
+ * Extract every loop id stamped into dropped-loops.md via the
+ * `(loop:xxx)` marker that appendDroppedLoop writes for every entry it
+ * creates. Used as the deterministic exact-match path in
+ * pruneOpenLoopsAgainstDroppedIds — keyword matching can miss re-adds
+ * with different wording, but if the LLM re-uses the same id slug, this
+ * catches it 100%.
+ */
+export function loadDroppedLoopIds(maxosHome: string): string[] {
+  const path = join(maxosHome, "workspace", "memory", "dropped-loops.md");
+  if (!existsSync(path)) return [];
+  try {
+    const content = readFileSync(path, "utf-8");
+    const ids = new Set<string>();
+    for (const match of content.matchAll(LOOP_ID_MARKER_RE)) {
+      ids.add(match[1]);
+    }
+    return [...ids];
+  } catch {
+    return [];
+  }
+}
+
+export interface DropEntry {
+  /** Loop topic — what goes in the bolded heading. */
+  topic: string;
+  /** Loop id — used for idempotency check and (loop:xxx) marker. */
+  loopId: string;
+  /** YYYY-MM-DD when the drop happened. */
+  date: string;
+  /** Free text appended after "Reason: ". */
+  reason: string;
+  /** Where the drop signal came from. */
+  source: "google-task-deletion" | "verbal" | "manual";
+  /** Optional person — appended in parens after the bolded topic. */
+  person?: string;
+}
+
+const ACTIVE_DROPS_HEADER = "## Active Drops";
+const DEFAULT_HEADER = `---
+name: dropped-loops
+description: Persistent list of open loops Mark has explicitly told Max to drop — debrief and morning brief tasks check this before resurfacing items
+type: reference
+---
+
+# Dropped Loops
+
+When Mark says "drop it", "I don't need to do that", "skip it", or otherwise explicitly closes a loop that the debrief would carry forward — add it here. Future debrief and morning brief sessions check this list before resurfacing items.
+
+Format: \`- **[Topic/Name]** — dropped [date]. Reason: [what Mark said]\`
+
+${ACTIVE_DROPS_HEADER}
+`;
+
+function formatDropLine(entry: DropEntry): string {
+  const personSuffix = entry.person ? ` (${entry.person})` : "";
+  const sourceText =
+    entry.source === "google-task-deletion"
+      ? "via Google Task deletion"
+      : entry.source === "manual"
+        ? "manually"
+        : "verbally";
+  return `- **${entry.topic}**${personSuffix} — dropped ${entry.date} ${sourceText}. Reason: ${entry.reason}. (loop:${entry.loopId})`;
+}
+
+/**
+ * Append a tombstone to dropped-loops.md so the LLM-driven debrief can't
+ * re-create a loop that Mark has retired. Idempotent — checks for an
+ * existing `(loop:xxx)` marker before writing.
+ *
+ * Called by the Google Tasks reconciler when it detects that a tracked
+ * task has disappeared. The dropped-loops.md file is the source of truth
+ * for both Filter 1 (output stripping in gateway) and the periodic prune
+ * that runs in closure-watcher.
+ */
+export function appendDroppedLoop(maxosHome: string, entry: DropEntry): void {
+  const path = join(maxosHome, "workspace", "memory", "dropped-loops.md");
+  mkdirSync(dirname(path), { recursive: true });
+
+  let content: string;
+  if (existsSync(path)) {
+    content = readFileSync(path, "utf-8");
+  } else {
+    content = DEFAULT_HEADER;
+  }
+
+  // Idempotency: skip if the loop id is already recorded.
+  const idMarker = `(loop:${entry.loopId})`;
+  if (content.includes(idMarker)) {
+    return;
+  }
+
+  // Ensure the Active Drops section exists. If the user-curated file
+  // doesn't have it (legacy / hand-edited), add one at the end.
+  if (!content.includes(ACTIVE_DROPS_HEADER)) {
+    if (!content.endsWith("\n")) content += "\n";
+    content += `\n${ACTIVE_DROPS_HEADER}\n`;
+  }
+
+  // Append the new entry to the end of the file. Order is chronological
+  // (by write time), which matches how the existing file is curated.
+  if (!content.endsWith("\n")) content += "\n";
+  content += `${formatDropLine(entry)}\n`;
+
+  writeFileSync(path, content);
 }

@@ -9,6 +9,13 @@ import { markdownToTelegramHtml, stripHtmlToPlain } from "../utils/markdown-to-t
 import { logger } from "../utils/logger.js";
 import { logTelegramReply } from "../telegram-reply-logger.js";
 import { recordOutboundId } from "../brew-outbound-capture.js";
+import { logOutboundEvent } from "../outbound-log.js";
+import {
+  loadAntiPatternsFile,
+  scanForVoiceViolations,
+  logVoiceViolations,
+  type VoicePatterns,
+} from "../voice-violations.js";
 import type {
   ChannelAdapter,
   ChannelConfig,
@@ -351,12 +358,67 @@ export class TelegramAdapter implements ChannelAdapter {
     // through the conversation metadata. For now, DM-only usage is correct.
     const chatId = id;
 
+    // Round U (2026-05-07): SAFE-rewrite layer runs FIRST, before voice scan
+    // and HTML conversion. Em-dashes, curly quotes, line-leading AI tells
+    // get stripped deterministically. Banned phrases / nuanced voice issues
+    // are still detected by the voice-violations scan below — they need
+    // training, not auto-rewriting. Pre-rewrite count of removable AI tells
+    // had been ~99 em-dashes / 14 days through this channel.
+    let outboundText = content.text;
+    try {
+      const { safeRewrite } = await import("../voice-rewrite.js");
+      const rewrite = safeRewrite(content.text);
+      if (rewrite.totalChanges > 0) {
+        outboundText = rewrite.text;
+        logger.info("telegram:voice_rewrite_applied", {
+          conversationId,
+          task: content.taskName,
+          totalChanges: rewrite.totalChanges,
+          byCategory: rewrite.changesByCategory,
+        });
+      }
+    } catch (err) {
+      logger.warn("telegram:voice_rewrite_failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
     // Convert Markdown to Telegram HTML — Claude outputs Markdown but Telegram
     // renders HTML. Without this, **bold** shows as literal asterisks.
-    const formatted = markdownToTelegramHtml(content.text);
+    const formatted = markdownToTelegramHtml(outboundText);
     // Chunk at 3800, not 4096 — HTML tags add overhead beyond visible text,
     // and Telegram counts UTF-8 bytes not characters for some content.
     const chunks = smartChunk(formatted, 3800);
+
+    // Voice-violations scan — runs against the (already safe-rewritten) text.
+    // What remains here is the stuff we DON'T auto-rewrite: banned phrases,
+    // word patterns that might change meaning. Those go to the violations log
+    // for the nightly training task to learn from.
+    try {
+      const patterns: VoicePatterns = loadAntiPatternsFile(
+        join(MAXOS_HOME, "workspace", "voice", "anti-patterns.md"),
+      );
+      const violations = scanForVoiceViolations(outboundText, patterns);
+      if (violations.length > 0) {
+        logVoiceViolations(
+          join(MAXOS_HOME, "workspace", "memory", "voice-violations.jsonl"),
+          {
+            ts: Date.now(),
+            task: content.taskName,
+            conversationId,
+            totalChars: outboundText.length,
+            violationCount: violations.length,
+            violations: violations.slice(0, 20),
+          },
+        );
+      }
+    } catch { /* never block on voice-violation scanning */ }
+
+    // Outbound reliability tracking — every send gets recorded with timing
+    // and final status, so /status can surface silent-failure trends.
+    const sendStartedAt = Date.now();
+    let didRetry = false;
+    let outboundError: string | undefined = undefined;
 
     let firstMessageId: string | null = null;
 
@@ -375,12 +437,14 @@ export class TelegramAdapter implements ChannelAdapter {
         // Message too long — strip HTML, re-chunk smaller, retry as plain text
         if (errMsg.includes("message is too long")) {
           logger.warn("telegram:message_too_long", { chunkLen: chunk.length });
+          didRetry = true;
           const plainChunks = smartChunk(stripHtmlToPlain(chunk), 3400);
           for (const pc of plainChunks) {
             const plainOpts: Record<string, unknown> = {};
             if (type === "topic") plainOpts.message_thread_id = Number(id);
             await this.bot.api.sendMessage(chatId, pc, plainOpts).catch((retryErr) => {
               logger.error("telegram:retry_failed", { error: String(retryErr), chunkLen: pc.length });
+              outboundError = String(retryErr).slice(0, 200);
             });
           }
           continue;
@@ -389,18 +453,56 @@ export class TelegramAdapter implements ChannelAdapter {
         // HTML parsing failed — strip tags, unescape entities, retry as plain text
         if (errMsg.includes("can't parse entities")) {
           logger.warn("telegram:html_parse_failed", { chunkLen: chunk.length });
+          didRetry = true;
           const plainOpts: Record<string, unknown> = {};
           if (type === "topic") plainOpts.message_thread_id = Number(id);
           await this.bot.api.sendMessage(chatId, stripHtmlToPlain(chunk), plainOpts).catch((retryErr) => {
             logger.error("telegram:retry_failed", { error: String(retryErr), chunkLen: chunk.length });
+            outboundError = String(retryErr).slice(0, 200);
           });
           continue;
         }
 
         logger.error("telegram:send_error", { error: errMsg });
+        outboundError = errMsg.slice(0, 200);
+        // Log the failure event before re-throwing so it lands in the JSONL
+        try {
+          logOutboundEvent(
+            join(MAXOS_HOME, "workspace", "memory", "outbound-events.jsonl"),
+            {
+              ts: sendStartedAt,
+              task: content.taskName,
+              conversationId,
+              chunkCount: chunks.length,
+              totalChars: formatted.length,
+              durationMs: Date.now() - sendStartedAt,
+              status: "failed",
+              error: outboundError,
+              retried: didRetry,
+            },
+          );
+        } catch { /* never block on logging */ }
         throw err;
       }
     }
+
+    // Log success after all chunks land. Failure path above already logged.
+    try {
+      logOutboundEvent(
+        join(MAXOS_HOME, "workspace", "memory", "outbound-events.jsonl"),
+        {
+          ts: sendStartedAt,
+          task: content.taskName,
+          conversationId,
+          chunkCount: chunks.length,
+          totalChars: formatted.length,
+          durationMs: Date.now() - sendStartedAt,
+          status: outboundError ? "failed" : "ok",
+          error: outboundError,
+          retried: didRetry,
+        },
+      );
+    } catch { /* never block on logging */ }
 
     // After all chunks sent successfully, record the first message_id for
     // task-based reply lookup (e.g. morning-brew's next-day reply scan).

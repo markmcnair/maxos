@@ -36,6 +36,15 @@ export interface ResolvedEvent {
   knownAttendees: Dossier[];
   unknownAttendees: string[];
   ambiguousAttendees: Array<{ query: string; candidates: Dossier[] }>;
+  /**
+   * Recent iMessage lines (last 7 days) whose text matches the event title's
+   * significant words. Populated by enrichEventsWithImessageContext for
+   * "shaky" events (unknown/ambiguous attendees, or no resolved attendee
+   * but the title looks like a name). Lets the brief inject real-world
+   * context for ambiguous calendar entries (e.g. "NWA" matching family-
+   * group-chat discussion of the Bella Vista garage sale trip).
+   */
+  iMessageContext?: string;
 }
 
 // Words/phrases that mean "this is an activity or venue, not a person".
@@ -303,6 +312,137 @@ export function resolveEvent(
 }
 
 /**
+ * Extract significant words from an event title for iMessage cross-reference.
+ *
+ * Rules:
+ * - Token must be alphanumeric (after splitting on non-alphanum boundaries)
+ * - Keep tokens ≥4 chars OR ≥2-char all-uppercase acronyms (NWA, KCR, SPX, MIJI)
+ * - Filter common ≥4-char filler words (with, from, that, etc.)
+ * - Lowercase the result for matching against iMessage line content
+ */
+export function extractTitleSearchWords(title: string): string[] {
+  if (!title) return [];
+  const FILLER = new Set([
+    "with", "from", "that", "this", "have", "been", "into",
+    "what", "when", "where", "they", "them", "than", "then",
+    "your", "yours", "mine",
+  ]);
+  const out: string[] = [];
+  const tokens = title.split(/[^a-zA-Z0-9]+/).filter(Boolean);
+  for (const tok of tokens) {
+    const lower = tok.toLowerCase();
+    if (FILLER.has(lower)) continue;
+    const isAcronym = tok.length >= 2 && tok === tok.toUpperCase() && /[A-Z]/.test(tok);
+    if (tok.length >= 4 || isAcronym) {
+      out.push(lower);
+    }
+  }
+  return out;
+}
+
+/**
+ * Tapback reactions ("Liked X", "Loved Y", etc.) aren't meaningful context —
+ * they're status signals, not substantive chatter. Filter them out before
+ * surfacing iMessage matches in the calendar brief.
+ */
+const IMESSAGE_REACTION_PREFIXES = [
+  "Liked ", "Disliked ", "Loved ", "Laughed at ",
+  "Emphasized ", "Questioned ", "Removed a ",
+];
+function isImessageReaction(text: string): boolean {
+  return IMESSAGE_REACTION_PREFIXES.some((p) => text.includes(`|${p}`));
+}
+
+/**
+ * Pure filter: from a list of `timestamp|sender|text` iMessage lines, return
+ * the first `limit` non-reaction lines whose text contains any of `words`.
+ * Tested directly without the imessage-scan subprocess.
+ */
+export function selectImessageMatches(
+  lines: string[],
+  words: string[],
+  limit = 3,
+): string[] {
+  if (words.length === 0) return [];
+  const matched: string[] = [];
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    if (isImessageReaction(line)) continue;
+    const lower = line.toLowerCase();
+    if (words.some((w) => lower.includes(w))) {
+      matched.push(line);
+      if (matched.length >= limit) break;
+    }
+  }
+  return matched;
+}
+
+/**
+ * Run imessage-scan, search for lines matching the event title's significant
+ * words. Returns up to 3 representative lines as a single newline-joined
+ * string. Empty string when nothing matches or the scan fails.
+ */
+export async function findImessageContextForTitle(
+  title: string,
+  options: {
+    hours?: number;
+    limit?: number;
+    imessageScan?: string;
+    maxLineLength?: number;
+  } = {},
+): Promise<string> {
+  const hours = options.hours ?? 168; // 7 days
+  const scanLimit = options.limit ?? 500;
+  const maxLineLength = options.maxLineLength ?? 240;
+  const imessageScan = options.imessageScan
+    ?? join(
+      process.env.MAXOS_HOME ?? `${process.env.HOME}/.maxos`,
+      "workspace",
+      "tools",
+      "imessage-scan",
+    );
+
+  const words = extractTitleSearchWords(title);
+  if (words.length === 0) return "";
+
+  try {
+    const { stdout } = await execFileAsync(
+      imessageScan,
+      ["--hours", String(hours), "--limit", String(scanLimit)],
+      { timeout: 15_000, maxBuffer: 4 * 1024 * 1024 },
+    );
+    const lines = stdout.split("\n");
+    const matched = selectImessageMatches(lines, words, 3);
+    if (matched.length === 0) return "";
+    return matched
+      .map((l) => (l.length > maxLineLength ? l.slice(0, maxLineLength - 1) + "…" : l))
+      .join("\n");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Enrich events that look "shaky" (unknown/ambiguous attendees, or the title
+ * has name-like tokens but no dossier matched) with iMessage context. Mutates
+ * the events in place; returns nothing. Best-effort — errors don't block.
+ */
+export async function enrichEventsWithImessageContext(
+  events: ResolvedEvent[],
+  options: { imessageScan?: string; hours?: number } = {},
+): Promise<void> {
+  for (const ev of events) {
+    const hasUnknown = ev.unknownAttendees.length > 0 || ev.ambiguousAttendees.length > 0;
+    const titleHasNameTokens = extractNameTokens(ev.title).length > 0;
+    const noKnownAttendees = ev.knownAttendees.length === 0;
+    const isShaky = hasUnknown || (titleHasNameTokens && noKnownAttendees);
+    if (!isShaky) continue;
+    const ctx = await findImessageContextForTitle(ev.title, options);
+    if (ctx) ev.iMessageContext = ctx;
+  }
+}
+
+/**
  * Remove duplicate events (same title + same start time).
  * iMessage / Gmail events often show up on multiple calendars.
  */
@@ -422,6 +562,14 @@ export function formatCalendarBrief(dateISO: string, resolved: ResolvedEvent[]):
     if (ev.knownAttendees.length === 0 && ev.ambiguousAttendees.length === 0 && ev.unknownAttendees.length === 0) {
       lines.push("- _(solo event or no identifiable attendees)_");
     }
+    if (ev.iMessageContext) {
+      lines.push(
+        "- 💬 **Recent iMessage context** (last 7 days, semantic match on event title — use to disambiguate, do NOT invent if context doesn't actually clarify):",
+      );
+      lines.push("```");
+      lines.push(ev.iMessageContext);
+      lines.push("```");
+    }
     lines.push("");
   }
 
@@ -453,5 +601,11 @@ export async function buildCalendarBrief(options: {
   // that looks like those should not be flagged as an unknown attendee.
   const userEmails = options.userEmails ?? options.calendarIds.filter((id) => id.includes("@"));
   const resolved = deduped.map((e) => resolveEvent(e, dossiers, options.userFirstName, userEmails));
+  // Enrich shaky events (unknown/ambiguous attendees) with iMessage context
+  // from the last 7 days. Kills the "NWA = ❓ unknown" failure class — if
+  // Mark's family group chat has been planning a Bella Vista garage sale
+  // trip dubbed "NWA," that thread surfaces here so the brief has real
+  // context to render instead of a bare "❓ Unknown" line.
+  await enrichEventsWithImessageContext(resolved);
   return formatCalendarBrief(options.dateISO, resolved);
 }

@@ -152,6 +152,20 @@ export function formatQmdHits(hits: QmdHit[], maxChars = 3000): string {
   return parts.length > 1 ? parts.join("\n\n") : "";
 }
 
+/**
+ * Drop QMD hits whose file path contains an archive segment. Without this,
+ * stale meeting-prep notes (e.g., a 2026-04-17 file named
+ * "mark-squared-mike-salem.md") leak into briefs months after the meeting,
+ * causing the LLM to hallucinate Mike Salem onto every future "Mark Squared"
+ * event. Anything moved to an archive/ directory is explicitly NOT current.
+ */
+export function filterArchivedQmdHits(hits: QmdHit[]): QmdHit[] {
+  return hits.filter((h) => {
+    const path = (h.file || "").toLowerCase();
+    return !path.includes("/archive/") && !path.includes("/_archive/");
+  });
+}
+
 async function runQmdSearch(
   query: string,
   limit: number,
@@ -167,7 +181,8 @@ async function runQmdSearch(
     const trimmed = stdout.trim();
     if (!trimmed) return [];
     const parsed = JSON.parse(trimmed);
-    return Array.isArray(parsed) ? (parsed as QmdHit[]) : [];
+    if (!Array.isArray(parsed)) return [];
+    return filterArchivedQmdHits(parsed as QmdHit[]);
   } catch {
     return [];
   }

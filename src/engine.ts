@@ -81,6 +81,32 @@ export function buildOneShotArgs(opts: OneShotOptions): string[] {
   ];
 }
 
+/**
+ * Build the error message thrown when the claude CLI subprocess exits
+ * non-zero. Round R: claude CLI writes its auth-failure messages to
+ * stdout (not stderr) and exits 1. Pre-fix this function only forwarded
+ * stderr — so daemon.log showed `oneShot exited with code 1: ` with no
+ * payload, and the 2026-05-04 token-storm spent ~14 hours undiagnosed.
+ * Now: prefer stderr, fall back to stdout, label both when present, and
+ * cap each stream at 500 chars so a single bad task can't blow up the
+ * log line size budget.
+ *
+ * Tested in engine.test.ts.
+ */
+export function formatOneShotExitError(
+  code: number | null,
+  stderr: string,
+  stdout: string,
+): string {
+  const cap = (s: string) => (s.length > 500 ? s.slice(0, 500) + "…(truncated)" : s);
+  const e = stderr.trim();
+  const o = stdout.trim();
+  if (e && o) return `oneShot exited with code ${code}: stderr=${cap(e)} stdout=${cap(o)}`;
+  if (e) return `oneShot exited with code ${code}: ${cap(e)}`;
+  if (o) return `oneShot exited with code ${code}: ${cap(o)}`;
+  return `oneShot exited with code ${code}: (no output on stdout or stderr)`;
+}
+
 export async function oneShot(opts: OneShotOptions): Promise<string> {
   const args = buildOneShotArgs(opts);
   logger.info("engine:oneShot", { prompt: opts.prompt.slice(0, 100) });
@@ -121,7 +147,7 @@ export async function oneShot(opts: OneShotOptions): Promise<string> {
           reject(new Error(`oneShot timed out after ${opts.timeout}ms`));
         }
       } else if (code !== 0) {
-        reject(new Error(`oneShot exited with code ${code}: ${stderr.slice(0, 500)}`));
+        reject(new Error(formatOneShotExitError(code, stderr, stdout)));
       } else {
         resolve(stdout.trim());
       }
