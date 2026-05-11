@@ -146,6 +146,24 @@ export function parseHeartbeat(markdown: string): HeartbeatTask[] {
       const cronMatch = heading.match(
         /^([\d*/,-]+\s+[\d*/,-]+\s+[\d*/,-]+\s+[\d*/,-]+\s+[\d*/,-]+)\s*(\(.*\))?$/,
       );
+
+      // Sentinel: a heading that *looks* like it was meant to be a cron
+      // task (starts with a digit, comma, or `*`) but didn't match any of
+      // the cron forms above. Most likely an unrecognized [tag] surviving
+      // strip, or a typo. Warn loudly — silent drop is exactly the failure
+      // mode that hid the [timeout:30s] state-backup miss for weeks.
+      if (
+        !cronMatch
+        && /^[\d*]/.test(heading)
+        && (headingMatch[1].includes("[") || /\s/.test(heading))
+      ) {
+        logger.warn("scheduler:unparseable_heading", {
+          original: headingMatch[1].trim(),
+          afterTagStrip: heading,
+          hint: "looks cron-ish but no cron form matched — likely an unrecognized [tag] or typo",
+        });
+      }
+
       if (cronMatch) {
         currentCron = cronMatch[1].trim();
         continue;

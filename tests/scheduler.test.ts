@@ -111,6 +111,26 @@ describe("parseHeartbeat", () => {
     assert.equal(tasks[0].cron, "30 5 * * *");
   });
 
+  it("an unrecognized [tag] does not crash the parser (warns instead)", () => {
+    // The new sentinel emits a logger.warn for cron-shaped headings that
+    // don't match any cron form (likely unrecognized tag or typo). This
+    // test just confirms the parser doesn't throw and skips the task,
+    // rather than crashing or registering a malformed cron.
+    const md = "## 25,55 * * * * [made-up-tag]\n- some prompt";
+    assert.doesNotThrow(() => parseHeartbeat(md));
+    const tasks = parseHeartbeat(md);
+    assert.equal(tasks.length, 0, "unrecognized tag leaves heading unparseable, task is skipped (but warned)");
+  });
+
+  it("non-cron prose headings (like '## Notes') do not trigger a false-positive warning path", () => {
+    // The sentinel must only fire for cron-shaped headings. A pure prose
+    // heading like "## Notes" or "## Backup procedures" should be silently
+    // ignored without warning, since it's clearly not a malformed cron.
+    const md = "## Notes about the system\n- some bullet that should not register";
+    const tasks = parseHeartbeat(md);
+    assert.equal(tasks.length, 0);
+  });
+
   it("parses both [silent] and [timeout:Nm] tags together", () => {
     const md = "## Every 45 minutes [silent] [timeout:5m]\n- Quick checkpoint";
     const tasks = parseHeartbeat(md);

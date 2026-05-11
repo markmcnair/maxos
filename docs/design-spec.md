@@ -725,6 +725,10 @@ Decisions and fixes that emerged from 15+ onboarding test cycles. These are Tier
 
 - **Pre-flight kills by port, not by name.** `pkill -f maxos` is fragile. `lsof -ti :18790 | xargs kill` always works. The zombie daemon bug — old daemon holding the port, new daemon crashing silently on EADDRINUSE — was the root cause of an entire test run's failures.
 
+- **HEARTBEAT.md hot-reloads, compiled code does not.** When you change parser behavior in `scheduler.ts` (new tag, new syntax), `npm run build` + restart the daemon BEFORE editing HEARTBEAT.md with the new syntax. The daemon picks up workspace edits immediately, but the in-memory parser is whatever was in dist/ at start. Editing HEARTBEAT.md with a tag the running parser doesn't recognize leaves that tag in the heading, the cron regex fails, and the task silently drops from the schedule with no warning log. This pattern bit `[timeout:30s]` for weeks (state backup un-registered, no alert) and `[model:sonnet]` briefly during the 2026-05-10 rework (9 tasks vanished until rebuild + restart).
+
+- **Heading-tag parse failures must NOT silently drop tasks.** Related to the above — when an unrecognized tag breaks the cron regex, the scheduler should `logger.warn("scheduler:unparseable_heading", { heading })` rather than skipping silently. Easier to write a test that pins this than to debug missing cron entries later. (Not yet implemented — open follow-up.)
+
 ### Onboarding
 
 - **SessionStart hook > CLAUDE.md instructions.** CLAUDE.md is a file the agent can choose to ignore. A `.claude/settings.json` SessionStart hook is injected into context before the agent's first response. ~50% onboarding failure rate became ~100% success rate with the hook.
