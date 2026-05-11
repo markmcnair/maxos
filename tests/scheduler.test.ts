@@ -91,6 +91,26 @@ describe("parseHeartbeat", () => {
     assert.equal(tasks[0].timeout, 1_200_000);
   });
 
+  it("parses [timeout:Ns] tag as seconds (fast script tasks)", () => {
+    const md = "## 30 5 * * * [script] [timeout:30s]\n- echo done";
+    const tasks = parseHeartbeat(md);
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0].cron, "30 5 * * *");
+    assert.equal(tasks[0].timeout, 30_000);
+    assert.equal(tasks[0].script, true);
+  });
+
+  it("regression: [timeout:30s] no longer silently drops the task (ISSUE-011)", () => {
+    // Pre-fix: timeout regex only matched "m", leaving [timeout:30s] in the
+    // heading. The cron regex then failed to match and the task vanished
+    // from the schedule with no error log. The daily state backup at
+    // 30 5 * * * was un-registered for weeks because of this.
+    const md = "## 30 5 * * * [script] [silent] [timeout:30s]\n- cp /a /b";
+    const tasks = parseHeartbeat(md);
+    assert.equal(tasks.length, 1, "task must register, not silently drop");
+    assert.equal(tasks[0].cron, "30 5 * * *");
+  });
+
   it("parses both [silent] and [timeout:Nm] tags together", () => {
     const md = "## Every 45 minutes [silent] [timeout:5m]\n- Quick checkpoint";
     const tasks = parseHeartbeat(md);

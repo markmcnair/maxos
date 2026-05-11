@@ -248,7 +248,7 @@ The scheduler parses HEARTBEAT.md looking for:
 - `## CRON_EXPRESSION (description)` — used directly
 - `[silent]` tag on headings — task runs but output is NOT delivered to user channels
 - `[script]` tag on headings — the bullet is a shell command, exec directly (no Claude spawn, no LLM cost)
-- `[timeout:Nm]` tag on headings — custom timeout in minutes
+- `[timeout:Nm]` / `[timeout:Ns]` tag on headings — custom timeout in minutes or seconds
 - `[model:NAME]` tag on headings — per-task model override (e.g. `[model:sonnet]` for cheap one-shots), falls back to `config.engine.model` if unset
 - Bullet points under each heading are the task prompt
 

@@ -109,10 +109,19 @@ export function parseHeartbeat(markdown: string): HeartbeatTask[] {
       isScript = /\[script\]/i.test(heading);
       heading = heading.replace(/\[script\]/gi, "").trim();
 
-      // Check for [timeout:Nm] tag — custom timeout in minutes
-      const timeoutMatch = heading.match(/\[timeout:(\d+)m\]/i);
-      customTimeout = timeoutMatch ? parseInt(timeoutMatch[1]) * 60_000 : undefined;
-      heading = heading.replace(/\[timeout:\d+m\]/gi, "").trim();
+      // Check for [timeout:Nm] / [timeout:Ns] tag. Seconds for fast script
+      // tasks (state backup, journal checkpoint), minutes for LLM work.
+      // Pre-fix only matched "m" — entries like [timeout:30s] left the tag
+      // in the heading, which broke the cron regex below, which silently
+      // dropped the task from the schedule (no warning, no log line). The
+      // daily state backup at 30 5 * * * went un-registered for weeks
+      // because of this.
+      const timeoutMatch = heading.match(/\[timeout:(\d+)(m|s)\]/i);
+      customTimeout = timeoutMatch
+        ? parseInt(timeoutMatch[1], 10)
+          * (timeoutMatch[2].toLowerCase() === "s" ? 1_000 : 60_000)
+        : undefined;
+      heading = heading.replace(/\[timeout:\d+[ms]\]/gi, "").trim();
 
       // Check for [model:NAME] tag — per-task model override
       const modelMatch = heading.match(/\[model:([a-z0-9.-]+)\]/i);
