@@ -196,7 +196,7 @@ export async function buildRelationshipKit(options: {
   const maxosHome = options.maxosHome ?? process.env.MAXOS_HOME ?? join(homedir(), ".maxos");
   const vaultRoot = options.vaultRoot ?? join(maxosHome, "vault");
   const now = options.now ?? new Date();
-  const today = now.toISOString().slice(0, 10);
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 
   const dossiers = loadDossiers(vaultRoot);
 

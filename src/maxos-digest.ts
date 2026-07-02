@@ -173,7 +173,13 @@ const isCLI = process.argv[1]?.endsWith("maxos-digest.js");
 if (isCLI) {
   (async () => {
     const maxosHome = process.env.MAXOS_HOME || `${process.env.HOME}/.maxos`;
-    const doctorResults = await runAllChecks({ maxosHome, fast: true });
+    // The MaxOS daemon and its scheduler were retired in the Hermes migration,
+    // so their health checks now always fail. Drop them so the digest reports
+    // honestly. Hermes cron health is covered by the separate task watchdog.
+    const OBSOLETE_CHECKS = new Set(["daemon", "recent-task-activity"]);
+    const doctorResults = (await runAllChecks({ maxosHome, fast: true })).filter(
+      (r) => !OBSOLETE_CHECKS.has(r.name),
+    );
     const message = buildDigestMessage({
       maxosHome,
       now: new Date(),

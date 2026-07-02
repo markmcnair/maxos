@@ -591,7 +591,7 @@ export async function checkClaudeAuthFromRecentFailures(
     return {
       name: "claude-auth",
       status: "PASS",
-      detail: `recovered — last LLM task succeeded ${minutesSince}m ago (after ${r.count} earlier failure(s) since ${new Date(cutoff).toISOString().slice(0, 10)})`,
+      detail: `recovered — last LLM task succeeded ${minutesSince}m ago (after ${r.count} earlier failure(s) since ${new Date(cutoff).toLocaleDateString("en-CA")})`,
       durationMs: ms(start),
     };
   }

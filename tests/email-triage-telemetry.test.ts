@@ -170,7 +170,9 @@ describe("loadRecentTrainingRuns", () => {
         "",
       ].join("\n"),
     );
-    const r = loadRecentTrainingRuns(home, 30);
+    // Anchor `now` to the fixture date so the 30-day window stays
+    // deterministic regardless of when the suite runs.
+    const r = loadRecentTrainingRuns(home, 30, Date.parse("2026-05-06T00:00:00.000Z"));
     assert.equal(r.length, 1);
   });
 });

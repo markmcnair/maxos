@@ -262,10 +262,14 @@ async function runFromCLI(): Promise<void> {
   const port = 18790;
   for (const alert of fresh) {
     await postAlertToDaemon(alert.text, port);
+    // Primary delivery now: print alert to stdout so the cron wrapper relays
+    // it to Telegram via `hermes send`. The daemon POST above is a harmless
+    // no-op kept only to avoid touching the dedup/record flow.
+    console.log(alert.text);
     recordAlertSent(alertLogPath, alert.taskPattern, alert.expectedFireDateKey);
   }
 
-  console.log(
+  console.error(
     `watchdog: ${fresh.length} fresh alert${fresh.length === 1 ? "" : "s"} sent ` +
     `(${allAlerts.length - fresh.length} suppressed via dedup)`,
   );

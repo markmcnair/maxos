@@ -53,13 +53,17 @@ export interface GmailMetadata {
   labelIds: string[];
   /** Optional Gmail internalDate as ms-since-epoch string */
   internalDate?: string;
+  /** Gmail thread id — enables thread-reply detection */
+  threadId?: string;
 }
 
 export type SignalType =
   | "bucket_changed"
   | "moved_to_inbox"
   | "read_after_archive_or_delete"
-  | "untouched_seemail_30d";
+  | "untouched_seemail_30d"
+  | "trashed_after_bucket"
+  | "replied_in_thread";
 
 export interface Signal {
   /** Emission timestamp (ISO 8601) */
@@ -110,6 +114,24 @@ export function diffBucket(
   const out: Signal[] = [];
   const ts = now.toISOString();
   const cur = classifyCurrentBucket(current, entry.account);
+
+  // trashed_after_bucket: user trashed an email triage did NOT bucket as
+  // delete → strong "this was junk" correction. Checked FIRST because a
+  // trashed message often still carries its old bucket label, so a naive
+  // classify would read it as "unchanged" and miss the correction.
+  // Exclusion: an email triage assigned to "delete" legitimately lives in
+  // TRASH (triage moves deletes there), so delete must NOT fire this.
+  if (current.labelIds.includes("TRASH") && entry.assigned_bucket !== "delete") {
+    out.push({
+      ts,
+      type: "trashed_after_bucket",
+      account: entry.account,
+      messageId: entry.message_id,
+      prior: entry.assigned_bucket,
+      current: "delete",
+    });
+    return out;
+  }
 
   // gone: don't emit confusing signals
   if (cur === "gone") return out;
@@ -190,6 +212,39 @@ export function detectStaleSeemail(
   ];
 }
 
+/**
+ * Detect a user-sent reply in the thread of an email triage filed as
+ * see-mail / archive / delete. A reply means the email actually needed
+ * action → the right bucket was re-mail. Pure — no I/O. The caller is
+ * responsible for fetching the thread's SENT internalDates and the
+ * triage time.
+ *
+ * Returns [] when assigned_bucket === "re-mail" (a reply there is
+ * expected, not a correction). Otherwise emits one signal if ANY sent
+ * reply landed after triage ran.
+ */
+export function detectThreadReply(
+  entry: DailyLogEntry,
+  sentReplyEpochMsList: number[],
+  triageTimeMs: number,
+): Signal[] {
+  if (entry.assigned_bucket === "re-mail") return [];
+  const repliedAfterTriage = sentReplyEpochMsList.some((ms) => ms > triageTimeMs);
+  if (!repliedAfterTriage) return [];
+  return [
+    {
+      // Pure detector: callers override `ts` with the emission time.
+      ts: new Date(triageTimeMs).toISOString(),
+      type: "replied_in_thread",
+      account: entry.account,
+      messageId: entry.message_id,
+      prior: entry.assigned_bucket,
+      current: "re-mail",
+      details: "user replied after triage",
+    },
+  ];
+}
+
 // ───── Persistence ─────
 
 /** Stable dedup key — same message + same signal type = same key. */
@@ -242,6 +297,22 @@ export interface SweepResult {
   errors: { messageId: string; error: string }[];
 }
 
+/** Fetches the labels + internalDate + threadId for one message. */
+export type MetadataFetcher = (account: Account, messageId: string) => Promise<GmailMetadata>;
+
+/**
+ * Fetches the SENT-message internalDates (epoch ms) for one thread.
+ * Returns one number per SENT message in the thread. Injected so tests
+ * can supply a fake.
+ */
+export type ThreadReplyFetcher = (account: Account, threadId: string) => Promise<number[]>;
+
+const THREAD_REPLY_BUCKETS: ReadonlySet<BucketName> = new Set<BucketName>([
+  "see-mail",
+  "archive",
+  "delete",
+]);
+
 /**
  * Run one sweep pass. Reads daily-log, fetches current state per email
  * via the injected `fetcher`, computes signals, dedups against previous
@@ -252,23 +323,30 @@ export interface SweepResult {
  *
  * Tolerant of per-email fetch errors — logs them in the result without
  * aborting the sweep.
+ *
+ * The optional `threadFetcher` enables replied_in_thread detection. It's
+ * only invoked for entries bucketed see-mail/archive/delete that were NOT
+ * already flagged by a trash or bucket-change correction, to limit API
+ * calls.
  */
 export async function sweepOnce(
   home: string,
   now: Date,
-  fetcher: (account: Account, messageId: string) => Promise<GmailMetadata>,
+  fetcher: MetadataFetcher,
+  threadFetcher?: ThreadReplyFetcher,
 ): Promise<SweepResult> {
   const dailyLogPath = join(home, ".config", "email-triage", "daily-log.json");
   if (!existsSync(dailyLogPath)) {
     return { scanned: 0, emitted: [], errors: [] };
   }
-  let log: { emails?: DailyLogEntry[] };
+  let log: { emails?: DailyLogEntry[]; triaged_at?: string };
   try {
     log = JSON.parse(readFileSync(dailyLogPath, "utf-8"));
   } catch {
     return { scanned: 0, emitted: [], errors: [{ messageId: "(parse)", error: "daily-log.json malformed" }] };
   }
   const entries = log.emails ?? [];
+  const triageTimeMs = log.triaged_at ? Date.parse(log.triaged_at) : NaN;
   const emittedKeys = loadEmittedSignalKeys(home);
 
   const newSignals: Signal[] = [];
@@ -291,6 +369,33 @@ export async function sweepOnce(
       ...detectStaleSeemail(entry, meta, now),
     ];
 
+    // replied_in_thread: gated behind a thread fetcher + the right bucket +
+    // not-already-flagged, to avoid an extra API call per message.
+    const alreadyFlagged = candidates.some(
+      (c) =>
+        c.type === "trashed_after_bucket" ||
+        c.type === "bucket_changed" ||
+        c.type === "moved_to_inbox",
+    );
+    if (
+      threadFetcher &&
+      !alreadyFlagged &&
+      !Number.isNaN(triageTimeMs) &&
+      meta.threadId &&
+      THREAD_REPLY_BUCKETS.has(entry.assigned_bucket)
+    ) {
+      try {
+        const sentTimes = await threadFetcher(entry.account, meta.threadId);
+        const sig = detectThreadReply(entry, sentTimes, triageTimeMs);
+        for (const s of sig) candidates.push({ ...s, ts: now.toISOString() });
+      } catch (err) {
+        errors.push({
+          messageId: entry.message_id,
+          error: `thread: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+
     for (const sig of candidates) {
       const k = signalKey(sig);
       if (emittedKeys.has(k)) continue;
@@ -304,15 +409,19 @@ export async function sweepOnce(
   return { scanned: entries.length, emitted: newSignals, errors };
 }
 
-// ───── Default fetcher (real Gmail via gws CLI) ─────
+// ───── Default fetchers (real Gmail via gws CLI) ─────
+
+function wrapperFor(account: Account): string {
+  return account === "emprise" ? "gws-emprise" : "gws-personal";
+}
 
 /**
  * Fetcher implementation that calls the gws CLI for the given account.
- * Returns labelIds + internalDate. Used by the CLI entry point; tests
- * inject their own fetcher.
+ * Returns labelIds + internalDate + threadId. Used by the CLI entry
+ * point; tests inject their own fetcher.
  */
 export async function gwsFetcher(account: Account, messageId: string): Promise<GmailMetadata> {
-  const wrapper = account === "emprise" ? "gws-emprise" : "gws-personal";
+  const wrapper = wrapperFor(account);
   const params = JSON.stringify({
     userId: "me",
     id: messageId,
@@ -332,7 +441,42 @@ export async function gwsFetcher(account: Account, messageId: string): Promise<G
     id: parsed.id,
     labelIds: Array.isArray(parsed.labelIds) ? parsed.labelIds : [],
     internalDate: parsed.internalDate,
+    threadId: parsed.threadId,
   };
+}
+
+/**
+ * Thread fetcher implementation that calls the gws CLI. Returns the
+ * internalDate (epoch ms) of every SENT message in the thread.
+ */
+export async function gwsThreadReplyFetcher(account: Account, threadId: string): Promise<number[]> {
+  const wrapper = wrapperFor(account);
+  const params = JSON.stringify({
+    userId: "me",
+    id: threadId,
+    format: "metadata",
+  });
+  const { stdout } = await execFileAsync(
+    wrapper,
+    ["gmail", "users", "threads", "get", "--params", params, "--format", "json"],
+    { timeout: 8_000 },
+  );
+  const idx = stdout.indexOf("{");
+  if (idx < 0) throw new Error("no JSON in gws output");
+  const parsed = JSON.parse(stdout.slice(idx));
+  const messages: unknown = parsed.messages;
+  if (!Array.isArray(messages)) return [];
+  const out: number[] = [];
+  for (const m of messages) {
+    if (!m || typeof m !== "object") continue;
+    const labelIds = (m as Record<string, unknown>).labelIds;
+    const internalDate = (m as Record<string, unknown>).internalDate;
+    if (Array.isArray(labelIds) && labelIds.includes("SENT") && typeof internalDate === "string") {
+      const ms = Number(internalDate);
+      if (!Number.isNaN(ms)) out.push(ms);
+    }
+  }
+  return out;
 }
 
 // ───── CLI entry ─────
@@ -340,7 +484,7 @@ export async function gwsFetcher(account: Account, messageId: string): Promise<G
 const isCLI = process.argv[1]?.endsWith("email-signal-sweep.js");
 if (isCLI) {
   const home = process.env.HOME ?? homedir();
-  sweepOnce(home, new Date(), gwsFetcher).then((r) => {
+  sweepOnce(home, new Date(), gwsFetcher, gwsThreadReplyFetcher).then((r) => {
     if (r.emitted.length > 0 || r.errors.length > 0 || process.env.MAXOS_SIGNAL_VERBOSE) {
       console.log(
         `email-signal-sweep: scanned=${r.scanned} emitted=${r.emitted.length} errors=${r.errors.length}`,

@@ -234,7 +234,8 @@ export class TelegramAdapter implements ChannelAdapter {
       const url = `https://api.telegram.org/file/bot${this.config!.botToken}/${file.file_path}`;
 
       // Create date-based subdirectory to keep inbox organized
-      const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+      const d = new Date();
+      const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; // YYYY-MM-DD (local/Central)
       const dayDir = join(INBOX_DIR, today);
       if (!existsSync(dayDir)) {
         mkdirSync(dayDir, { recursive: true });

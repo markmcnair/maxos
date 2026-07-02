@@ -253,7 +253,7 @@ export class Scheduler {
   private taskCrons: Map<string, string> = new Map();
   private runningCount = 0;
   private pendingOneShots: PendingOneShot[] = [];
-  private oneShotInterval: ReturnType<typeof setInterval> | null = null;
+  private oneShotInterval: ScheduledTask | null = null;
   private oneShotStateCallback: ((shots: PendingOneShot[]) => void) | null = null;
 
   constructor(
@@ -460,11 +460,17 @@ export class Scheduler {
   }
 
   /** Schedule a one-time task at a specific time. Returns the generated ID. */
-  addOneShot(fireAt: number, prompt: string, silent = false): string {
+  addOneShot(fireAt: number | string, prompt: string, silent = false): string {
     const id = randomBytes(4).toString("hex");
-    const shot: PendingOneShot = { id, fireAt, prompt, silent, createdAt: Date.now() };
+    // Normalize to epoch ms — HTTP /api/oneshot passes ISO strings via JSON,
+    // which would otherwise compare as NaN against Date.now() in tickOneShots.
+    const fireAtMs = typeof fireAt === "number" ? fireAt : new Date(fireAt).getTime();
+    if (!Number.isFinite(fireAtMs)) {
+      throw new Error(`addOneShot: invalid fireAt ${JSON.stringify(fireAt)}`);
+    }
+    const shot: PendingOneShot = { id, fireAt: fireAtMs, prompt, silent, createdAt: Date.now() };
     this.pendingOneShots.push(shot);
-    logger.info("scheduler:oneshot_added", { id, fireAt: new Date(fireAt).toISOString() });
+    logger.info("scheduler:oneshot_added", { id, fireAt: new Date(fireAtMs).toISOString() });
     this.oneShotStateCallback?.(this.pendingOneShots);
     return id;
   }
@@ -483,12 +489,17 @@ export class Scheduler {
     return [...this.pendingOneShots];
   }
 
-  /** Start the one-shot tick loop (checks every 30s) */
+  /** Start the one-shot tick loop (checks every minute via node-cron) */
   startOneShotLoop(): void {
     if (this.oneShotInterval) return;
-    this.oneShotInterval = setInterval(() => {
+    // Use node-cron rather than setInterval — setInterval gets throttled or
+    // paused by macOS power management after the system sleeps, causing
+    // one-shots to silently never fire even though the daemon process stays
+    // alive. node-cron checks wall-clock time on each tick and survives
+    // sleep/wake cycles, matching how recurring scheduled tasks already work.
+    this.oneShotInterval = schedule("* * * * *", () => {
       void this.tickOneShots();
-    }, 30_000);
+    });
     // Also run immediately in case something is already due
     void this.tickOneShots();
   }
@@ -536,7 +547,7 @@ export class Scheduler {
     for (const job of this.jobs.values()) job.stop();
     this.jobs.clear();
     if (this.oneShotInterval) {
-      clearInterval(this.oneShotInterval);
+      this.oneShotInterval.stop();
       this.oneShotInterval = null;
     }
   }

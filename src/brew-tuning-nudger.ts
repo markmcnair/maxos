@@ -13,12 +13,18 @@ export function proposeNudges(archives: DailyArchive[]): Nudge[] {
 
   const topicDays: Record<string, number> = {};
   for (const a of archives) {
-    if (a.learning) topicDays[a.learning.topic] = (topicDays[a.learning.topic] ?? 0) + 1;
+    if (!a.learning) continue;
+    const topic = a.learning.topic || a.learning.track;
+    if (!topic) continue;
+    topicDays[topic] = (topicDays[topic] ?? 0) + 1;
   }
   for (const [topic, days] of Object.entries(topicDays)) {
     if (days >= 3) {
       nudges.push({ key: topic, delta: 0.03, reason: `stuck ${days} days` });
-    } else if (days === 1 && archives.some(a => a.learning?.topic === topic && a.streak > 0)) {
+    } else if (days === 1 && archives.some(a => {
+      const t = a.learning && (a.learning.topic || a.learning.track);
+      return t === topic && a.streak > 0;
+    })) {
       nudges.push({ key: topic, delta: -0.03, reason: "switched away after day 1" });
     }
   }

@@ -18,6 +18,12 @@ export interface ArchivePrime {
 
 export interface ArchiveLearning {
   topic: string;
+  /**
+   * Some archive records key the learning subject as `track` rather than
+   * `topic` (e.g. 2026-06-15; brief-recovery.ts reads `track ?? topic`).
+   * Optional and used as a fallback for `topic`.
+   */
+  track?: string;
   day: number;
   breadcrumbUrl: string;
   alternative: string;

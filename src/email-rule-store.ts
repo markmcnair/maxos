@@ -220,7 +220,7 @@ export function proposeRule(
   draft: RuleDraft,
   now: Date = new Date(),
 ): RuleStore {
-  const date = now.toISOString().slice(0, 10);
+  const date = now.toLocaleDateString("en-CA");  // local YYYY-MM-DD (toISOString is UTC, rolls after ~7pm CT)
   const slug = slugifyPattern(draft.pattern);
   let id = `rule-${date}-${slug}`;
   let n = 1;

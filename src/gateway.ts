@@ -356,7 +356,7 @@ export class Gateway {
       const currentHHMM =
         String(now.getHours()).padStart(2, "0") + ":" +
         String(now.getMinutes()).padStart(2, "0");
-      const todayDate = now.toISOString().slice(0, 10);
+      const todayDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 
       if (currentHHMM === resetTime && this.lastResetDate !== todayDate) {
         this.lastResetDate = todayDate;
@@ -964,7 +964,7 @@ export class Gateway {
   private journalTaskResult(taskName: string, result: string): void {
     try {
       const now = new Date();
-      const dateStr = now.toISOString().slice(0, 10);
+      const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
       const timeStr = now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
       const memoryDir = join(MAXOS_HOME, "workspace", "memory");
       const journalPath = join(memoryDir, `${dateStr}.md`);

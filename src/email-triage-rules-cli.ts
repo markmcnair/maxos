@@ -209,7 +209,7 @@ if (isCLI) {
         sender_regex: arg("--sender-regex") ?? undefined,
         subject_regex: arg("--subject-regex") ?? undefined,
         action: (arg("--action") ?? "delete") as BucketName,
-        created_from: arg("--created-from") ?? `cli-${new Date().toISOString().slice(0, 10)}`,
+        created_from: arg("--created-from") ?? `cli-${new Date().toLocaleDateString("en-CA")}`,
         notes: arg("--notes") ?? undefined,
       },
       new Date(),

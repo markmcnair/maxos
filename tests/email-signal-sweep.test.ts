@@ -11,6 +11,7 @@ import {
   signalKey,
   sweepOnce,
   detectStaleSeemail,
+  detectThreadReply,
   type Signal,
   type GmailMetadata,
   type DailyLogEntry,
@@ -134,6 +135,28 @@ describe("diffBucket", () => {
       assert.ok(s.type !== "bucket_changed");
       assert.ok(s.type !== "moved_to_inbox");
     }
+  });
+
+  it("emits trashed_after_bucket when a non-delete email lands in TRASH (even if it still carries its old bucket label)", () => {
+    // see-mail email trashed by the user — still carries its see-mail label,
+    // so a naive classify reads it as unchanged. The TRASH check must win.
+    const meta: GmailMetadata = { id: "m1", labelIds: [empriseSeemail, "TRASH"] };
+    const signals = diffBucket(entry(), meta, new Date("2026-05-05T20:00:00Z"));
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0].type, "trashed_after_bucket");
+    assert.equal(signals[0].prior, "see-mail");
+    assert.equal(signals[0].current, "delete");
+  });
+
+  it("does NOT emit trashed_after_bucket when triage assigned delete (delete legitimately lives in TRASH)", () => {
+    const meta: GmailMetadata = { id: "m1", labelIds: [empriseDelete, "TRASH"] };
+    const signals = diffBucket(
+      entry({ assigned_bucket: "delete", assigned_label_id: empriseDelete }),
+      meta,
+      new Date("2026-05-05T20:00:00Z"),
+    );
+    const types = signals.map((s) => s.type);
+    assert.ok(!types.includes("trashed_after_bucket"), "delete-bucket trash must not be a correction");
   });
 });
 
@@ -407,5 +430,175 @@ describe("detectStaleSeemail", () => {
     };
     const signals = detectStaleSeemail(entry, meta, new Date("2026-05-05T00:00:00Z"));
     assert.equal(signals.length, 0);
+  });
+});
+
+// ───── thread-reply detection ─────
+
+describe("detectThreadReply", () => {
+  function entry(overrides: Partial<DailyLogEntry> = {}): DailyLogEntry {
+    return {
+      account: "personal",
+      message_id: "t1",
+      from: "x@x.com",
+      subject: "x",
+      assigned_bucket: "see-mail",
+      assigned_label_id: "Label_6623329574940472323",
+      secondary_labels: [],
+      draft_created: false,
+      notes: "",
+      ...overrides,
+    };
+  }
+
+  const triageMs = Date.parse("2026-05-05T20:55:00Z");
+
+  it("emits replied_in_thread when a sent reply landed AFTER triage", () => {
+    const sentTimes = [Date.parse("2026-05-06T09:00:00Z")];
+    const signals = detectThreadReply(entry(), sentTimes, triageMs);
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0].type, "replied_in_thread");
+    assert.equal(signals[0].prior, "see-mail");
+    assert.equal(signals[0].current, "re-mail");
+  });
+
+  it("does NOT emit when the only sent reply predates triage", () => {
+    const sentTimes = [Date.parse("2026-05-05T08:00:00Z")];
+    const signals = detectThreadReply(entry(), sentTimes, triageMs);
+    assert.equal(signals.length, 0);
+  });
+
+  it("does NOT emit when there are no sent replies at all", () => {
+    const signals = detectThreadReply(entry(), [], triageMs);
+    assert.equal(signals.length, 0);
+  });
+
+  it("returns [] when assigned_bucket is re-mail (a reply there is expected, not a correction)", () => {
+    const sentTimes = [Date.parse("2026-05-06T09:00:00Z")];
+    const signals = detectThreadReply(entry({ assigned_bucket: "re-mail" }), sentTimes, triageMs);
+    assert.equal(signals.length, 0);
+  });
+});
+
+// ───── orchestrator: thread-reply wiring ─────
+
+describe("sweepOnce — replied_in_thread integration", () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "etriage-thread-"));
+    mkdirSync(join(home, ".config", "email-triage"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  function writeDailyLog(entries: DailyLogEntry[]) {
+    writeFileSync(
+      join(home, ".config", "email-triage", "daily-log.json"),
+      JSON.stringify({ date: "2026-05-05", triaged_at: "2026-05-05T20:55:00Z", emails: entries }),
+    );
+  }
+
+  it("emits replied_in_thread when the injected thread fetcher reports a SENT reply after triage", async () => {
+    writeDailyLog([
+      {
+        account: "personal",
+        message_id: "m1",
+        from: "a@x.com",
+        subject: "s1",
+        assigned_bucket: "see-mail",
+        assigned_label_id: "Label_6623329574940472323",
+        secondary_labels: [],
+        draft_created: false,
+        notes: "",
+      },
+    ]);
+
+    // Message unchanged (still see-mail, still UNREAD so no other signal),
+    // but the thread has a SENT reply after triage.
+    const fetcher = async (): Promise<GmailMetadata> => ({
+      id: "m1",
+      labelIds: ["Label_6623329574940472323", "UNREAD"],
+      threadId: "thread1",
+    });
+    const threadFetcher = async (_a: string, tid: string): Promise<number[]> => {
+      assert.equal(tid, "thread1");
+      return [Date.parse("2026-05-06T09:00:00Z")];
+    };
+
+    const r = await sweepOnce(home, new Date("2026-05-07T22:00:00Z"), fetcher, threadFetcher);
+    assert.equal(r.scanned, 1);
+    assert.equal(r.emitted.length, 1);
+    assert.equal(r.emitted[0].type, "replied_in_thread");
+    assert.equal(r.emitted[0].messageId, "m1");
+    assert.equal(r.emitted[0].current, "re-mail");
+  });
+
+  it("does NOT fetch the thread (and emits nothing) when the email was already flagged by a bucket change", async () => {
+    writeDailyLog([
+      {
+        account: "personal",
+        message_id: "m1",
+        from: "a@x.com",
+        subject: "s1",
+        assigned_bucket: "see-mail",
+        assigned_label_id: "Label_6623329574940472323",
+        secondary_labels: [],
+        draft_created: false,
+        notes: "",
+      },
+    ]);
+    // Current state: moved to archive bucket → bucket_changed fires; the
+    // thread fetcher must not be called (gated behind not-already-flagged).
+    const fetcher = async (): Promise<GmailMetadata> => ({
+      id: "m1",
+      labelIds: ["Label_1899785834793579761"], // personal archive
+      threadId: "thread1",
+    });
+    let threadCalled = false;
+    const threadFetcher = async (): Promise<number[]> => {
+      threadCalled = true;
+      return [Date.parse("2026-05-06T09:00:00Z")];
+    };
+
+    const r = await sweepOnce(home, new Date("2026-05-07T22:00:00Z"), fetcher, threadFetcher);
+    assert.equal(threadCalled, false, "thread fetch must be gated behind not-already-flagged");
+    assert.equal(r.emitted.length, 1);
+    assert.equal(r.emitted[0].type, "bucket_changed");
+  });
+
+  it("does NOT fetch the thread when the email was fished back to the inbox (moved_to_inbox is already the strongest correction)", async () => {
+    writeDailyLog([
+      {
+        account: "personal",
+        message_id: "m1",
+        from: "a@x.com",
+        subject: "s1",
+        assigned_bucket: "see-mail",
+        assigned_label_id: "Label_6623329574940472323",
+        secondary_labels: [],
+        draft_created: false,
+        notes: "",
+      },
+    ]);
+    // Current state: fished back to INBOX → moved_to_inbox fires. The thread
+    // fetcher must not be called, and no redundant replied_in_thread emitted.
+    const fetcher = async (): Promise<GmailMetadata> => ({
+      id: "m1",
+      labelIds: ["INBOX", "UNREAD"],
+      threadId: "thread1",
+    });
+    let threadCalled = false;
+    const threadFetcher = async (): Promise<number[]> => {
+      threadCalled = true;
+      return [Date.parse("2026-05-06T09:00:00Z")];
+    };
+
+    const r = await sweepOnce(home, new Date("2026-05-07T22:00:00Z"), fetcher, threadFetcher);
+    assert.equal(threadCalled, false, "thread fetch must be gated when moved_to_inbox already fired");
+    assert.equal(r.emitted.length, 1);
+    assert.equal(r.emitted[0].type, "moved_to_inbox");
   });
 });
