@@ -14,8 +14,8 @@ export interface AuthoritativeRule {
 /**
  * Convert a filesystem path into the slug Claude Code uses for its
  * per-project auto-memory directory. `/` and `.` both become `-`, which
- * is why paths like `/Users/Max/.maxos/workspace` land at
- * `~/.claude/projects/-Users-Max--maxos-workspace/`.
+ * is why paths like `/Users/Max/.hermes/workspace` land at
+ * `~/.claude/projects/-Users-Max--hermes-workspace/`.
  */
 export function claudeProjectSlug(cwd: string): string {
   return cwd.replace(/[/.]/g, "-");

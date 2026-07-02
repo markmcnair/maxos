@@ -199,7 +199,7 @@ export function formatClosureLine(now: Date, title: string, loopId?: string): st
  */
 export function formatDropLine(now: Date, title: string, loopId?: string): string {
   const idTag = loopId ? ` (${loopId})` : "";
-  return `- [${hhmm(now)}] [DECISION] dropped${idTag} — Google Task deleted (Mark removed it from "🤖 MaxOS Loops"), so ${title} was never real`;
+  return `- [${hhmm(now)}] [DECISION] dropped${idTag} — Google Task deleted (Mark removed it from "Priority Bucket"), so ${title} was never real`;
 }
 
 /**
@@ -216,7 +216,7 @@ export async function runGoogleTasksReconciler(
     deps?: RunReconcilerDeps;
   } = {},
 ): Promise<{ closures: number; drops: number; creates: number; skippedReason?: string }> {
-  const maxosHome = options.maxosHome ?? process.env.MAXOS_HOME ?? `${process.env.HOME}/.maxos`;
+  const maxosHome = options.maxosHome ?? process.env.MAXOS_HOME ?? `${process.env.HOME}/.hermes`;
   const now = options.now ?? new Date();
   const gws = options.gws ?? "gws-personal";
   const listId = options.listId ?? MAXOS_LOOPS_LIST_ID;
@@ -273,7 +273,7 @@ export async function runGoogleTasksReconciler(
       topic: d.title,
       loopId: d.loopId,
       date: droppedDate,
-      reason: 'Mark deleted Google Task from "🤖 MaxOS Loops"',
+      reason: 'Mark deleted Google Task from "Priority Bucket"',
       source: "google-task-deletion",
       person: orig?.person,
     });

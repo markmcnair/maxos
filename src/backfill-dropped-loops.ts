@@ -96,7 +96,7 @@ export function runBackfill(maxosHome: string): { written: number; entries: Back
 // CLI entry — `node dist/src/backfill-dropped-loops.js`
 const isCLI = process.argv[1]?.endsWith("backfill-dropped-loops.js");
 if (isCLI) {
-  const maxosHome = process.env.MAXOS_HOME ?? join(homedir(), ".maxos");
+  const maxosHome = process.env.MAXOS_HOME ?? join(homedir(), ".hermes");
   const r = runBackfill(maxosHome);
   if (r.written > 0) {
     console.log(`backfill-dropped-loops: wrote ${r.written} tombstones to dropped-loops.md`);

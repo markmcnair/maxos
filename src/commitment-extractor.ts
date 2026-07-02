@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
  * Pure extractors — no I/O. Caller (sweep utility) handles message
  * fetch from gws + imessage-scan, dedup, and persistence.
  *
- * Storage: ~/.maxos/workspace/memory/commitments.jsonl + cancellations.jsonl
+ * Storage: ~/.hermes/workspace/memory/commitments.jsonl + cancellations.jsonl
  * (both append-only, JSONL, deduped by recordKey).
  */
 

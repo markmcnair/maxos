@@ -32,7 +32,7 @@ interface TelegramConfig extends ChannelConfig {
   forumTopics: boolean;
 }
 
-const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".maxos");
+const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".hermes");
 const INBOX_DIR = join(MAXOS_HOME, "inbox");
 
 export class TelegramAdapter implements ChannelAdapter {

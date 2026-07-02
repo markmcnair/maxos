@@ -172,7 +172,7 @@ function postToDeliverTask(text: string, port = 18790, timeoutMs = 5000): Promis
 const isCLI = process.argv[1]?.endsWith("maxos-digest.js");
 if (isCLI) {
   (async () => {
-    const maxosHome = process.env.MAXOS_HOME || `${process.env.HOME}/.maxos`;
+    const maxosHome = process.env.MAXOS_HOME || `${process.env.HOME}/.hermes`;
     // The MaxOS daemon and its scheduler were retired in the Hermes migration,
     // so their health checks now always fail. Drop them so the digest reports
     // honestly. Hermes cron health is covered by the separate task watchdog.

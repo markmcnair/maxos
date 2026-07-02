@@ -235,7 +235,7 @@ function postAlertToDaemon(
  * alert ever — not 24/day stacked from the hourly cron.
  */
 async function runFromCLI(): Promise<void> {
-  const maxosHome = process.env.MAXOS_HOME || `${process.env.HOME}/.maxos`;
+  const maxosHome = process.env.MAXOS_HOME || `${process.env.HOME}/.hermes`;
   const statePath = join(maxosHome, "state.json");
   if (!existsSync(statePath)) {
     return;

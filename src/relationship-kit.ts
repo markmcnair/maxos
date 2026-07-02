@@ -193,7 +193,7 @@ export async function buildRelationshipKit(options: {
   vaultRoot?: string;
   now?: Date;
 } = {}): Promise<string> {
-  const maxosHome = options.maxosHome ?? process.env.MAXOS_HOME ?? join(homedir(), ".maxos");
+  const maxosHome = options.maxosHome ?? process.env.MAXOS_HOME ?? join(homedir(), ".hermes");
   const vaultRoot = options.vaultRoot ?? join(maxosHome, "vault");
   const now = options.now ?? new Date();
   const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;

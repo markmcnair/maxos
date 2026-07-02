@@ -92,7 +92,7 @@ const isCLI = process.argv[1]?.endsWith("meeting-prep-archiver.js");
 if (isCLI) {
   const vaultRoot =
     process.env.VAULT_ROOT ||
-    `${process.env.HOME}/.maxos/vault`;
+    `${process.env.HOME}/.hermes/vault`;
   const ageArg = process.argv.indexOf("--age-days");
   const ageDays = ageArg >= 0 ? Number(process.argv[ageArg + 1]) : 7;
   const r = archiveOldMeetingPreps(vaultRoot, new Date(), ageDays);

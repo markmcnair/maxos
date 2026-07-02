@@ -107,7 +107,7 @@ export function formatSummary(s: ViolationsSummary): string {
 
 const isCLI = process.argv[1]?.endsWith("voice-violations-summary.js");
 if (isCLI) {
-  const maxosHome = process.env.MAXOS_HOME || `${process.env.HOME}/.maxos`;
+  const maxosHome = process.env.MAXOS_HOME || `${process.env.HOME}/.hermes`;
   const path = join(maxosHome, "workspace", "memory", "voice-violations.jsonl");
   if (!existsSync(path)) {
     console.log("Voice violations summary: no log yet (clean or no outbound recorded).");

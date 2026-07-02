@@ -206,7 +206,7 @@ export async function buildMemoryContext(
   options: BuildMemoryOptions = {},
 ): Promise<string> {
   const {
-    maxosHome = process.env.MAXOS_HOME || join(homedir(), ".maxos"),
+    maxosHome = process.env.MAXOS_HOME || join(homedir(), ".hermes"),
     now = new Date(),
     skipQmd = false,
     qmdPath = "qmd",

@@ -31,7 +31,7 @@ export function findReplyTo(path: string, targetMsgId: string): ReplyLogEntry | 
 // CLI entry
 if (import.meta.url === `file://${process.argv[1]}`) {
   const msgId = process.argv[2];
-  const path = process.argv[3] ?? `${process.env.HOME}/.maxos/workspace/memory/telegram-replies.jsonl`;
+  const path = process.argv[3] ?? `${process.env.HOME}/.hermes/workspace/memory/telegram-replies.jsonl`;
   if (!msgId) {
     console.error("usage: brew-reply-parser <msgId> [path]");
     process.exit(1);

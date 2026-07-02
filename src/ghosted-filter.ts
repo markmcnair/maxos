@@ -58,7 +58,7 @@ export async function fetchAuthoritativeGhosted(options: {
   hours?: number;
   since?: string;
 }): Promise<GhostedEntry[]> {
-  const maxosHome = options.maxosHome ?? process.env.MAXOS_HOME ?? join(homedir(), ".maxos");
+  const maxosHome = options.maxosHome ?? process.env.MAXOS_HOME ?? join(homedir(), ".hermes");
   const scan = join(maxosHome, "workspace", "tools", "imessage-scan");
   const vault = join(maxosHome, "vault");
   const args = ["--ghosted", "--resolve-names", vault];

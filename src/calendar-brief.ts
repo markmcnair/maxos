@@ -396,7 +396,7 @@ export async function findImessageContextForTitle(
   const maxLineLength = options.maxLineLength ?? 240;
   const imessageScan = options.imessageScan
     ?? join(
-      process.env.MAXOS_HOME ?? `${process.env.HOME}/.maxos`,
+      process.env.MAXOS_HOME ?? `${process.env.HOME}/.hermes`,
       "workspace",
       "tools",
       "imessage-scan",

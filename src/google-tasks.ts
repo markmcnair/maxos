@@ -3,8 +3,14 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-/** Dedicated Google Tasks list MaxOS owns. Mark sees it under "🤖 MaxOS Loops". */
-export const MAXOS_LOOPS_LIST_ID = "V2p5LUtsRlFtRkcyb0xyYQ";
+/**
+ * Google Tasks list the reconciler targets. The old dedicated "🤖 MaxOS Loops"
+ * list (V2p5LUtsRlFtRkcyb0xyYQ) was deleted ~2026-06-06; loops now live in
+ * Mark's main Priority Bucket list, which the Tasks API addresses as
+ * "@default". Wrapper script google-tasks-reconciler.sh exports
+ * MAXOS_TASKS_LIST_ID to override.
+ */
+export const MAXOS_LOOPS_LIST_ID = process.env.MAXOS_TASKS_LIST_ID ?? "@default";
 
 export interface GoogleTask {
   id: string;

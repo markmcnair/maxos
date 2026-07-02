@@ -196,7 +196,7 @@ export async function runClosureWatcher(options: {
   addedFromFacts: string[];
   blockedFromFacts: string[];
 }> {
-  const maxosHome = options.maxosHome ?? process.env.MAXOS_HOME ?? join(homedir(), ".maxos");
+  const maxosHome = options.maxosHome ?? process.env.MAXOS_HOME ?? join(homedir(), ".hermes");
   const vaultRoot = options.vaultRoot ?? join(maxosHome, "vault");
   const hours = options.hours ?? 0.25;
   const imessageScan = options.imessageScan

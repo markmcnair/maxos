@@ -81,7 +81,7 @@ export function archiveOldJournals(
 // CLI entry — `node dist/src/journal-archiver.js`
 const isCLI = process.argv[1]?.endsWith("journal-archiver.js");
 if (isCLI) {
-  const maxosHome = process.env.MAXOS_HOME || `${process.env.HOME}/.maxos`;
+  const maxosHome = process.env.MAXOS_HOME || `${process.env.HOME}/.hermes`;
   const ageArg = process.argv.indexOf("--age-days");
   const ageDays = ageArg >= 0 ? Number(process.argv[ageArg + 1]) : 30;
   const r = archiveOldJournals(maxosHome, new Date(), ageDays);

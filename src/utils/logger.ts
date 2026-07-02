@@ -2,7 +2,7 @@ import winston from "winston";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
-const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".maxos");
+const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".hermes");
 
 export const logger = winston.createLogger({
   level: process.env.MAXOS_LOG_LEVEL || "info",

@@ -152,7 +152,7 @@ export async function smokeOpenRouter(
 const isCLI = process.argv[1]?.endsWith("openrouter-smoke.js");
 if (isCLI) {
   (async () => {
-    const maxosHome = process.env.MAXOS_HOME || `${process.env.HOME}/.maxos`;
+    const maxosHome = process.env.MAXOS_HOME || `${process.env.HOME}/.hermes`;
     const envPath = `${maxosHome}/.env`;
     if (!existsSync(envPath)) {
       console.error("✗ .env not found at", envPath);

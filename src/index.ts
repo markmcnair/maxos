@@ -13,7 +13,7 @@ import { parseTimeToTimestamp } from "./utils/time.js";
 import { writeRestartMarker } from "./restart-marker.js";
 import { buildMemoryContext } from "./memory.js";
 
-const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".maxos");
+const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".hermes");
 const HEALTH_URL = "http://127.0.0.1:18790/health";
 const API_BASE = "http://127.0.0.1:18790/api";
 
@@ -385,7 +385,7 @@ program
     const { existsSync } = await import("node:fs");
     const { join } = await import("node:path");
     const { homedir } = await import("node:os");
-    const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".maxos");
+    const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".hermes");
     const workspace = join(MAXOS_HOME, "workspace");
 
     if (!existsSync(join(workspace, "SOUL.md"))) {

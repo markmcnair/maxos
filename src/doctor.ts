@@ -850,7 +850,7 @@ async function checkVoiceViolations24h(maxosHome: string): Promise<CheckResult> 
 // ───── Orchestration ──────────────────────────────────────────────────────
 
 export async function runAllChecks(options: DoctorOptions = {}): Promise<CheckResult[]> {
-  const maxosHome = options.maxosHome ?? process.env.MAXOS_HOME ?? `${process.env.HOME}/.maxos`;
+  const maxosHome = options.maxosHome ?? process.env.MAXOS_HOME ?? `${process.env.HOME}/.hermes`;
   const repoRoot = options.repoRoot ?? `${process.env.HOME}/Projects/maxos`;
   const fast = options.fast ?? false;
 

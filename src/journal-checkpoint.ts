@@ -194,7 +194,7 @@ export function runJournalCheckpoint(
 const isMain = import.meta.url === `file://${process.argv[1]}`;
 if (isMain) {
   const workspace = process.env.MAXOS_WORKSPACE
-    ?? join(process.env.MAXOS_HOME ?? `${process.env.HOME}/.maxos`, "workspace");
+    ?? join(process.env.MAXOS_HOME ?? `${process.env.HOME}/.hermes`, "workspace");
   const result = runJournalCheckpoint(workspace, new Date());
   if (result.wrote) {
     console.log(`journal-checkpoint: appended ${result.closureCount} closure(s)`);

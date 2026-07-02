@@ -43,7 +43,7 @@ import { shouldAttemptRecovery, recoverFromVault } from "./brief-recovery.js";
 import { buildDigestMessage } from "./maxos-digest.js";
 import { runAllChecks as runDoctorChecks } from "./doctor.js";
 
-const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".maxos");
+const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".hermes");
 const OUTBOUND_IDS_PATH = join(MAXOS_HOME, "workspace", "memory", "outbound-ids.jsonl");
 
 /**

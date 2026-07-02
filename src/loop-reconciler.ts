@@ -116,7 +116,7 @@ export function classifyLoopEvidence(signals: {
 async function imessageHasOutgoing(
   phone: string,
   sinceDate: string,
-  imessageScan = join(process.env.MAXOS_HOME ?? `${process.env.HOME}/.maxos`, "workspace/tools/imessage-scan"),
+  imessageScan = join(process.env.MAXOS_HOME ?? `${process.env.HOME}/.hermes`, "workspace/tools/imessage-scan"),
 ): Promise<{ found: boolean; snippet?: string }> {
   try {
     const { stdout } = await execFileAsync(

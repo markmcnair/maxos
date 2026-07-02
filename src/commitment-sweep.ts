@@ -239,7 +239,7 @@ export async function sweepOutbound(
 
 const isCLI = process.argv[1]?.endsWith("commitment-sweep.js");
 if (isCLI) {
-  const home = process.env.MAXOS_HOME ?? `${homedir()}/.maxos`;
+  const home = process.env.MAXOS_HOME ?? `${homedir()}/.hermes`;
   sweepOutbound(home, { hoursBack: 6 }).then((r) => {
     if (r.newCommitments + r.newCancellations > 0 || process.env.MAXOS_COMMIT_VERBOSE) {
       console.log(

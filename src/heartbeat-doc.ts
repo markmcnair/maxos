@@ -104,7 +104,7 @@ export function buildHeartbeatDoc(tasks: HeartbeatTask[], now: Date = new Date()
 
 const isCLI = process.argv[1]?.endsWith("heartbeat-doc.js");
 if (isCLI) {
-  const maxosHome = process.env.MAXOS_HOME || `${process.env.HOME}/.maxos`;
+  const maxosHome = process.env.MAXOS_HOME || `${process.env.HOME}/.hermes`;
   const heartbeatPath = join(maxosHome, "workspace", "HEARTBEAT.md");
   if (!existsSync(heartbeatPath)) {
     console.error("HEARTBEAT.md not found at", heartbeatPath);

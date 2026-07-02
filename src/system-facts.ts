@@ -40,7 +40,7 @@ function readMaxosPackageVersion(): string {
 export function buildSystemFacts(options: BuildOptions = {}): SystemFacts {
   const maxosHome = options.maxosHome
     ?? process.env.MAXOS_HOME
-    ?? join(homedir(), ".maxos");
+    ?? join(homedir(), ".hermes");
 
   let model = "unknown";
   try {
