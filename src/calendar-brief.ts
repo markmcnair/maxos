@@ -2,6 +2,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { join } from "node:path";
+import { loadRecentMessagesCache, localScanTimestamp } from "./outgoing-dms-cache.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -378,9 +379,17 @@ export function selectImessageMatches(
 }
 
 /**
- * Run imessage-scan, search for lines matching the event title's significant
- * words. Returns up to 3 representative lines as a single newline-joined
- * string. Empty string when nothing matches or the scan fails.
+ * Find iMessage lines matching the event title's significant words. Returns
+ * up to 3 representative lines as a single newline-joined string. Empty
+ * string when nothing matches or no source is available.
+ *
+ * FDA-safe source order (the gateway loses Full Disk Access on every macOS
+ * update, so cron-spawned imessage-scan dies with sqlite rc=23):
+ *   1. recent-messages cache (48h, both directions, written every 15 min by
+ *      the FDA-granted LaunchAgent) — used when fresh and it covers `hours`;
+ *   2. real imessage-scan spawn — wider windows, or cache missing/stale;
+ *   3. if that spawn FAILS and a fresh cache exists, serve degraded context
+ *      from the cache anyway: 48h of real signal beats an empty brief.
  */
 export async function findImessageContextForTitle(
   title: string,
@@ -389,35 +398,67 @@ export async function findImessageContextForTitle(
     limit?: number;
     imessageScan?: string;
     maxLineLength?: number;
+    maxosHome?: string;
   } = {},
 ): Promise<string> {
   const hours = options.hours ?? 168; // 7 days
   const scanLimit = options.limit ?? 500;
   const maxLineLength = options.maxLineLength ?? 240;
+  const maxosHome = options.maxosHome
+    ?? process.env.MAXOS_HOME ?? `${process.env.HOME}/.hermes`;
   const imessageScan = options.imessageScan
-    ?? join(
-      process.env.MAXOS_HOME ?? `${process.env.HOME}/.hermes`,
-      "workspace",
-      "tools",
-      "imessage-scan",
-    );
+    ?? join(maxosHome, "workspace", "tools", "imessage-scan");
 
   const words = extractTitleSearchWords(title);
   if (words.length === 0) return "";
 
+  const format = (matched: string[]): string =>
+    matched.length === 0
+      ? ""
+      : matched
+          .map((l) => (l.length > maxLineLength ? l.slice(0, maxLineLength - 1) + "…" : l))
+          .join("\n");
+
+  const cache = loadRecentMessagesCache(maxosHome);
+  const matchFromCache = (c: NonNullable<typeof cache>): string[] => {
+    // Window anchored at generated_at (the cache may lag up to 45 min); a
+    // wider-than-cache request just passes every line through unfiltered.
+    const bound = localScanTimestamp(new Date(c.generatedAt.getTime() - hours * 3_600_000));
+    return selectImessageMatches(c.lines.filter((l) => l.slice(0, 19) >= bound), words, 3);
+  };
+
+  if (cache?.ok && hours <= cache.hours) {
+    const matched = matchFromCache(cache);
+    process.stderr.write(
+      `calendar-brief: imessage context via cache (generated ${cache.generatedAt.toISOString()}, ${matched.length} match(es))\n`,
+    );
+    return format(matched);
+  }
+
+  const reason = cache === null
+    ? "missing/stale"
+    : !cache.ok ? "not ok" : `window too short (${hours}h > ${cache.hours}h)`;
+  process.stderr.write(`calendar-brief: imessage context via spawn (cache ${reason})\n`);
   try {
     const { stdout } = await execFileAsync(
       imessageScan,
       ["--hours", String(hours), "--limit", String(scanLimit)],
       { timeout: 15_000, maxBuffer: 4 * 1024 * 1024 },
     );
-    const lines = stdout.split("\n");
-    const matched = selectImessageMatches(lines, words, 3);
-    if (matched.length === 0) return "";
-    return matched
-      .map((l) => (l.length > maxLineLength ? l.slice(0, maxLineLength - 1) + "…" : l))
-      .join("\n");
-  } catch {
+    return format(selectImessageMatches(stdout.split("\n"), words, 3));
+  } catch (err) {
+    // This failure used to be swallowed as "" — indistinguishable from
+    // "no matching messages". Log it, then rescue from the cache if we can.
+    process.stderr.write(
+      `calendar-brief: imessage-scan spawn failed (${imessageScan}): ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    if (cache?.ok) {
+      const matched = matchFromCache(cache);
+      process.stderr.write(
+        `calendar-brief: serving degraded imessage context from cache (${cache.hours}h window, ${matched.length} match(es))\n`,
+      );
+      return format(matched);
+    }
     return "";
   }
 }
@@ -429,7 +470,7 @@ export async function findImessageContextForTitle(
  */
 export async function enrichEventsWithImessageContext(
   events: ResolvedEvent[],
-  options: { imessageScan?: string; hours?: number } = {},
+  options: { imessageScan?: string; hours?: number; maxosHome?: string } = {},
 ): Promise<void> {
   for (const ev of events) {
     const hasUnknown = ev.unknownAttendees.length > 0 || ev.ambiguousAttendees.length > 0;

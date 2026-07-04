@@ -11,6 +11,7 @@ import {
   type MessageInput,
   type Record_,
 } from "./commitment-extractor.js";
+import { loadOutgoingDmsCache, localScanTimestamp } from "./outgoing-dms-cache.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -111,6 +112,34 @@ async function fetchSentEmails(
   return out;
 }
 
+/** Leading timestamp of a genuine `--outgoing-dms` line ("YYYY-MM-DD HH:MM:SS"). */
+const SCAN_LINE_TS_RE = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+
+/**
+ * Parse one `imessage-scan --outgoing-dms` line: `ts|recipient|body`.
+ * Returns null for blanks and for multi-line message-body continuations.
+ * The timestamp-shape guard matters twice over: it keeps body fragments out
+ * of the extractor, and it fixes a latent crash — the old inline parse called
+ * toISOString() on an unvalidated timestamp, so a continuation line
+ * containing two pipes threw RangeError and silently discarded the whole
+ * batch.
+ */
+function parseOutgoingIMessageLine(line: string): OutgoingIMessage | null {
+  if (!line) return null;
+  const firstPipe = line.indexOf("|");
+  if (firstPipe < 0) return null;
+  const secondPipe = line.indexOf("|", firstPipe + 1);
+  if (secondPipe < 0) return null;
+  const ts = line.slice(0, firstPipe);
+  if (!SCAN_LINE_TS_RE.test(ts)) return null;
+  const recipient = line.slice(firstPipe + 1, secondPipe);
+  const body = line.slice(secondPipe + 1);
+  // Convert "YYYY-MM-DD HH:MM:SS" to ISO
+  const isoTs = new Date(ts.replace(" ", "T") + "Z").toISOString();
+  const messageId = `imsg-${ts}-${recipient.replace(/\D/g, "").slice(-10)}`;
+  return { messageId, recipient, sentAt: isoTs, body };
+}
+
 async function fetchOutgoingIMessages(
   hoursBack: number,
   imessageScan: string,
@@ -123,23 +152,52 @@ async function fetchOutgoingIMessages(
     );
     const out: OutgoingIMessage[] = [];
     for (const line of stdout.split("\n")) {
-      if (!line) continue;
-      const firstPipe = line.indexOf("|");
-      if (firstPipe < 0) continue;
-      const secondPipe = line.indexOf("|", firstPipe + 1);
-      if (secondPipe < 0) continue;
-      const ts = line.slice(0, firstPipe);
-      const recipient = line.slice(firstPipe + 1, secondPipe);
-      const body = line.slice(secondPipe + 1);
-      // Convert "YYYY-MM-DD HH:MM:SS" to ISO
-      const isoTs = new Date(ts.replace(" ", "T") + "Z").toISOString();
-      const messageId = `imsg-${ts}-${recipient.replace(/\D/g, "").slice(-10)}`;
-      out.push({ messageId, recipient, sentAt: isoTs, body });
+      const msg = parseOutgoingIMessageLine(line);
+      if (msg) out.push(msg);
     }
     return out;
-  } catch {
-    return [];
+  } catch (err) {
+    // This failure used to be swallowed (return []) — 430+ FDA denials
+    // across the imessage consumers were invisible in this sweep's logs.
+    // Log loudly AND rethrow so sweepOutbound records it in errors[].
+    process.stderr.write(
+      `commitment-sweep: imessage-scan spawn failed (${imessageScan}): ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    throw err;
   }
+}
+
+/**
+ * FDA-safe fetch: prefer the outgoing-dms cache written by the FDA-granted
+ * LaunchAgent (the gateway loses Full Disk Access on every macOS update, so
+ * cron-spawned scans die with sqlite rc=23). Fall back to the direct spawn
+ * when the cache is missing/stale/not-ok or doesn't reach back hoursBack.
+ * Window is anchored at generated_at (the cache may lag up to 45 min);
+ * overlap is safe — the emitted-keys dedup absorbs re-scanned messages.
+ */
+async function fetchOutgoingIMessagesCacheFirst(
+  home: string,
+  hoursBack: number,
+  imessageScan: string,
+): Promise<OutgoingIMessage[]> {
+  const cache = loadOutgoingDmsCache(home);
+  const windowMs = hoursBack * 3_600_000;
+  if (cache?.ok && Date.now() - windowMs >= cache.generatedAt.getTime() - cache.hours * 3_600_000) {
+    const bound = localScanTimestamp(new Date(cache.generatedAt.getTime() - windowMs));
+    const out: OutgoingIMessage[] = [];
+    for (const line of cache.lines) {
+      const msg = parseOutgoingIMessageLine(line);
+      // ts-valid lines are exactly 19 chars of timestamp — bound-comparable.
+      if (msg && line.slice(0, 19) >= bound) out.push(msg);
+    }
+    process.stderr.write(
+      `commitment-sweep: outgoing iMessages via cache (generated ${cache.generatedAt.toISOString()}, ${out.length} in window)\n`,
+    );
+    return out;
+  }
+  const reason = cache === null ? "missing/stale" : !cache.ok ? "not ok" : "window too short";
+  process.stderr.write(`commitment-sweep: outgoing iMessages via spawn (cache ${reason})\n`);
+  return fetchOutgoingIMessages(hoursBack, imessageScan);
 }
 
 // ───── Sweep orchestrator ─────
@@ -169,7 +227,8 @@ export async function sweepOutbound(
   const imessageScan = options.imessageScan
     ?? `${home}/workspace/tools/imessage-scan`;
   const fetchSent = options.deps?.fetchSent ?? fetchSentEmails;
-  const fetchIMessages = options.deps?.fetchIMessages ?? fetchOutgoingIMessages;
+  const fetchIMessages = options.deps?.fetchIMessages
+    ?? ((hours: number, scanPath: string) => fetchOutgoingIMessagesCacheFirst(home, hours, scanPath));
   const markEmail = options.markEmail ?? "markmcnair2@gmail.com";
 
   const errors: string[] = [];

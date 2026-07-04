@@ -2,39 +2,46 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
- * Reader for the outgoing-DMs cache written every 15 minutes by the
+ * Readers for the iMessage scan caches written every 15 minutes by the
  * FDA-granted LaunchAgent (ai.hermes.imsg-ghosted).
  *
- * Why it exists: the gateway — and every cron job it spawns — loses macOS
+ * Why they exist: the gateway — and every cron job it spawns — loses macOS
  * Full Disk Access on each weekly update, so spawning imessage-scan from a
  * scheduled context fails with "sqlite-open(rc=23): authorization denied"
  * (430+ closure-watcher failures since 2026-06-28). The LaunchAgent keeps
- * FDA and dumps `imessage-scan --outgoing-dms` (trailing 168h, DMs only,
- * group chats excluded) to workspace/memory/outgoing-dms-cache.json.
- * Consumers read the cache first and only spawn as a fallback — interactive
- * contexts have FDA, and queries older than the cache window need the real
- * scan.
+ * FDA and dumps scan output to workspace/memory/. Consumers read the cache
+ * first and only spawn as a fallback — interactive contexts have FDA, and
+ * queries older than a cache's window need the real scan.
  *
- * Cache shape:
- *   { "generated_at": "<UTC ISO, Z>", "ok": true, "exit": 0, "hours": 168,
- *     "lines": ["YYYY-MM-DD HH:MM:SS|recipient_handle|text", ...],
- *     "error": "" }
+ * Two caches, same JSON shape:
+ *   - outgoing-dms-cache.json — `imessage-scan --outgoing-dms`, trailing
+ *     168h, Mark's outgoing DMs only, group chats excluded. Lines:
+ *     "YYYY-MM-DD HH:MM:SS|recipient_handle|text".
+ *   - recent-messages-cache.json — plain `imessage-scan`, trailing 48h,
+ *     BOTH directions (sender field is "Mark" for outgoing, the handle or
+ *     resolved name for incoming). Lines: "YYYY-MM-DD HH:MM:SS|sender|text".
+ *
+ * Shape: { "generated_at": "<UTC ISO, Z>", "ok": true, "exit": 0,
+ *          "hours": N, "lines": [...], "error": "" }
  *
  * Line timestamps are LOCAL time; generated_at is UTC. Multi-line message
- * bodies appear as extra array entries without the `ts|recipient|` prefix —
+ * bodies appear as extra array entries without the `ts|sender|` prefix —
  * exactly as they would on raw imessage-scan stdout.
  */
 
-export interface OutgoingDmsCache {
+export interface ImessageScanCache {
   /** True when the agent's scan exited 0. False means fall back to spawn. */
   ok: boolean;
   /** Instant the agent generated the dump (parsed from UTC generated_at). */
   generatedAt: Date;
   /** Trailing window, in hours before generatedAt, the scan covered. */
   hours: number;
-  /** Raw `imessage-scan --outgoing-dms` output lines. */
+  /** Raw imessage-scan output lines. */
   lines: string[];
 }
+
+/** Alias from before the module grew a second cache; same shape. */
+export type OutgoingDmsCache = ImessageScanCache;
 
 /**
  * A cache older than this is treated as absent. The agent runs every
@@ -45,6 +52,10 @@ export const OUTGOING_DMS_CACHE_MAX_AGE_MS = 45 * 60 * 1000;
 
 export function outgoingDmsCachePath(maxosHome: string): string {
   return join(maxosHome, "workspace", "memory", "outgoing-dms-cache.json");
+}
+
+export function recentMessagesCachePath(maxosHome: string): string {
+  return join(maxosHome, "workspace", "memory", "recent-messages-cache.json");
 }
 
 /**
@@ -59,18 +70,19 @@ export function localScanTimestamp(d: Date): string {
 }
 
 /**
- * Load the outgoing-DMs cache. Returns null when the file is missing,
- * unparseable, or stale (generated_at older than 45 minutes) — callers then
- * fall back to spawning imessage-scan directly. A parseable-but-`ok:false`
- * cache is returned as-is so callers can log the reason and fall back.
+ * Shared loader core. Returns null when the file is missing, unparseable,
+ * or stale (generated_at older than 45 minutes) — callers then fall back to
+ * spawning imessage-scan directly. A parseable-but-`ok:false` cache is
+ * returned as-is so callers can log the reason and fall back.
  */
-export function loadOutgoingDmsCache(
-  maxosHome: string,
-  now: Date = new Date(),
-): OutgoingDmsCache | null {
+function loadScanCache(
+  path: string,
+  defaultHours: number,
+  now: Date,
+): ImessageScanCache | null {
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(outgoingDmsCachePath(maxosHome), "utf-8"));
+    raw = JSON.parse(readFileSync(path, "utf-8"));
   } catch {
     return null;  // missing or unparseable
   }
@@ -79,9 +91,25 @@ export function loadOutgoingDmsCache(
   const generatedAt = new Date(String(o.generated_at ?? ""));  // UTC ISO with Z
   if (Number.isNaN(generatedAt.getTime())) return null;
   if (now.getTime() - generatedAt.getTime() > OUTGOING_DMS_CACHE_MAX_AGE_MS) return null;
-  const hours = typeof o.hours === "number" && o.hours > 0 ? o.hours : 168;
+  const hours = typeof o.hours === "number" && o.hours > 0 ? o.hours : defaultHours;
   const lines = Array.isArray(o.lines)
     ? o.lines.filter((l): l is string => typeof l === "string")
     : [];
   return { ok: o.ok === true, generatedAt, hours, lines };
+}
+
+/** Load the outgoing-DMs cache (168h of Mark's outgoing DMs). */
+export function loadOutgoingDmsCache(
+  maxosHome: string,
+  now: Date = new Date(),
+): ImessageScanCache | null {
+  return loadScanCache(outgoingDmsCachePath(maxosHome), 168, now);
+}
+
+/** Load the recent-messages cache (48h, both directions, plain scan format). */
+export function loadRecentMessagesCache(
+  maxosHome: string,
+  now: Date = new Date(),
+): ImessageScanCache | null {
+  return loadScanCache(recentMessagesCachePath(maxosHome), 48, now);
 }

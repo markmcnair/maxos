@@ -5,8 +5,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   loadOutgoingDmsCache,
+  loadRecentMessagesCache,
   localScanTimestamp,
   outgoingDmsCachePath,
+  recentMessagesCachePath,
   OUTGOING_DMS_CACHE_MAX_AGE_MS,
 } from "../src/outgoing-dms-cache.js";
 
@@ -109,5 +111,65 @@ describe("loadOutgoingDmsCache", () => {
 
   it("exposes the 45-minute constant used for staleness", () => {
     assert.equal(OUTGOING_DMS_CACHE_MAX_AGE_MS, 45 * 60 * 1000);
+  });
+});
+
+describe("loadRecentMessagesCache", () => {
+  let home: string;
+  const now = new Date("2026-07-03T19:10:00Z");
+
+  const writeCache = (obj: unknown) => {
+    writeFileSync(recentMessagesCachePath(home), JSON.stringify(obj));
+  };
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "recent-cache-"));
+    mkdirSync(join(home, "workspace", "memory"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("reads recent-messages-cache.json (both directions, plain scan format)", () => {
+    writeCache({
+      generated_at: "2026-07-03T19:06:16Z",
+      ok: true,
+      exit: 0,
+      hours: 48,
+      lines: [
+        "2026-07-03 14:02:48|+15017338253|Just checking while I'm here.",  // incoming
+        "2026-07-03 13:54:22|Mark|Niiiiice lol",  // outgoing
+      ],
+      error: "",
+    });
+    const cache = loadRecentMessagesCache(home, now);
+    assert.ok(cache);
+    assert.equal(cache.ok, true);
+    assert.equal(cache.hours, 48);
+    assert.equal(cache.lines.length, 2);
+  });
+
+  it("has its own path, distinct from the outgoing-dms cache", () => {
+    assert.notEqual(recentMessagesCachePath(home), outgoingDmsCachePath(home));
+    assert.ok(recentMessagesCachePath(home).endsWith("workspace/memory/recent-messages-cache.json"));
+    // Writing only the outgoing-dms cache must not satisfy this loader.
+    writeFileSync(
+      outgoingDmsCachePath(home),
+      JSON.stringify({ generated_at: "2026-07-03T19:06:16Z", ok: true, hours: 168, lines: [] }),
+    );
+    assert.equal(loadRecentMessagesCache(home, now), null);
+  });
+
+  it("applies the same 45-minute staleness rule", () => {
+    writeCache({ generated_at: "2026-07-03T18:24:00Z", ok: true, hours: 48, lines: [] });  // 46 min old
+    assert.equal(loadRecentMessagesCache(home, now), null);
+  });
+
+  it("defaults hours to 48 when the field is absent", () => {
+    writeCache({ generated_at: "2026-07-03T19:06:00Z", ok: true, lines: [] });
+    const cache = loadRecentMessagesCache(home, now);
+    assert.ok(cache);
+    assert.equal(cache.hours, 48);
   });
 });
