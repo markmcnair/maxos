@@ -8,9 +8,12 @@ import {
   saveOpenLoops,
   classifyLoopEvidence,
   formatLoopReconciliation,
+  imessageEvidenceFromCache,
+  reconcileAllLoops,
   type OpenLoop,
   type ReconciliationResult,
 } from "../src/loop-reconciler.js";
+import { localScanTimestamp } from "../src/outgoing-dms-cache.js";
 
 describe("loadOpenLoops / saveOpenLoops", () => {
   let home: string;
@@ -143,6 +146,189 @@ describe("classifyLoopEvidence", () => {
       noContactInfo: true,
     });
     assert.equal(result.kind, "cannot-verify");
+  });
+});
+
+describe("imessageEvidenceFromCache", () => {
+  // Cache window: generated 2026-07-03T19:00Z covering the trailing 168h.
+  const cache = {
+    generatedAt: new Date("2026-07-03T19:00:00Z"),
+    hours: 168,
+    lines: [
+      "2026-07-03 13:54:22|+15012695797|Niiiiice lol",
+      "and a continuation line with digits 5012695797 | pipes | too",
+      "2026-07-01 09:15:00|+15017646415|Sent the deposit this morning",
+      "2026-06-28 08:00:00|+15012695797|older message to Miguel",
+    ],
+  };
+
+  it("cache hit: finds outgoing evidence for a contact since the bound", () => {
+    const r = imessageEvidenceFromCache("+15017646415", "2026-06-30 00:00:00", cache);
+    assert.ok(r);
+    assert.equal(r.found, true);
+    assert.ok(r.snippet?.includes("Sent the deposit"));
+  });
+
+  it("normalizes contact digits — formatting variants match the same handle", () => {
+    for (const phone of ["+1 (501) 764-6415", "501.764.6415", "15017646415", "501-764-6415"]) {
+      const r = imessageEvidenceFromCache(phone, "2026-06-30 00:00:00", cache);
+      assert.ok(r, `servable for ${phone}`);
+      assert.equal(r.found, true, `found for ${phone}`);
+    }
+  });
+
+  it("since-bound filtering: lines before the bound don't count", () => {
+    // Only line for this contact is 2026-07-01 09:15 — a later bound excludes it.
+    const r = imessageEvidenceFromCache("+15017646415", "2026-07-02 00:00:00", cache);
+    assert.ok(r);
+    assert.equal(r.found, false, "authoritative negative within the cache window");
+  });
+
+  it("bound is inclusive (timestamp >= since)", () => {
+    const r = imessageEvidenceFromCache("+15017646415", "2026-07-01 09:15:00", cache);
+    assert.ok(r);
+    assert.equal(r.found, true);
+  });
+
+  it("unknown contact within the window yields found:false, not a fallback", () => {
+    const r = imessageEvidenceFromCache("+15559990000", "2026-06-30 00:00:00", cache);
+    assert.ok(r);
+    assert.equal(r.found, false);
+  });
+
+  it("out-of-window: since bound older than generated_at minus hours → null (fall back to spawn)", () => {
+    // Window starts 2026-06-26T19:00Z; a 2026-06-20 bound predates it.
+    assert.equal(imessageEvidenceFromCache("+15012695797", "2026-06-20 00:00:00", cache), null);
+  });
+
+  it("not servable for handles without 10 digits (emails, short codes) → null", () => {
+    assert.equal(imessageEvidenceFromCache("miguel@example.com", "2026-06-30 00:00:00", cache), null);
+    assert.equal(imessageEvidenceFromCache("865-30", "2026-06-30 00:00:00", cache), null);
+    assert.equal(imessageEvidenceFromCache("", "2026-06-30 00:00:00", cache), null);
+  });
+
+  it("continuation lines never match, even when the body contains digits and pipes", () => {
+    const bodyTrap = {
+      ...cache,
+      lines: ["and a continuation line with digits 5012695797 | pipes | too"],
+    };
+    const r = imessageEvidenceFromCache("+15012695797", "2026-06-30 00:00:00", bodyTrap);
+    assert.ok(r);
+    assert.equal(r.found, false);
+  });
+
+  it("snippet is the first matching line, trimmed to 120 chars", () => {
+    const long = {
+      ...cache,
+      lines: [`2026-07-02 10:00:00|+15012695797|${"x".repeat(300)}`],
+    };
+    const r = imessageEvidenceFromCache("+15012695797", "2026-06-30 00:00:00", long);
+    assert.ok(r);
+    assert.equal(r.found, true);
+    assert.equal(r.snippet?.length, 120);
+  });
+});
+
+describe("reconcileAllLoops — cache-first iMessage evidence (FDA-safe path)", () => {
+  let home: string;
+
+  // A fake imessage-scan the spawn fallback will hit. Emits a distinctive
+  // marker so tests can tell spawn evidence from cache evidence.
+  const installFakeScan = () => {
+    const toolsDir = join(home, "workspace", "tools");
+    mkdirSync(toolsDir, { recursive: true });
+    writeFileSync(
+      join(toolsDir, "imessage-scan"),
+      '#!/bin/sh\necho "2026-01-02 10:00:00|spawned|SPAWNED-EVIDENCE"\n',
+      { mode: 0o755 },
+    );
+  };
+
+  const writeCache = (obj: unknown) => {
+    writeFileSync(
+      join(home, "workspace", "memory", "outgoing-dms-cache.json"),
+      JSON.stringify(obj),
+    );
+  };
+
+  const daysAgoYmd = (days: number) =>
+    localScanTimestamp(new Date(Date.now() - days * 24 * 3_600_000)).slice(0, 10);
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "loops-cache-"));
+    mkdirSync(join(home, "workspace", "memory"), { recursive: true });
+    installFakeScan();
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("resolves a loop from the cache without spawning", async () => {
+    writeCache({
+      generated_at: new Date().toISOString(),
+      ok: true,
+      hours: 168,
+      lines: [`${localScanTimestamp(new Date(Date.now() - 24 * 3_600_000))}|+15012695797|Paid you back just now`],
+    });
+    saveOpenLoops(home, [
+      { id: "miguel-repay", topic: "Miguel repayment", person: "Miguel", phone: "+1 (501) 269-5797", firstSeen: daysAgoYmd(10), lastUpdated: daysAgoYmd(3) },
+    ]);
+
+    const result = await reconcileAllLoops(home);
+    assert.equal(result.resolved.length, 1);
+    assert.ok(result.resolved[0].evidence.includes("Paid you back"), "evidence must come from the cache");
+    assert.ok(!result.resolved[0].evidence.includes("SPAWNED-EVIDENCE"));
+  });
+
+  it("cache negative within the window is authoritative — no spawn, loop stays open", async () => {
+    // The fake scan WOULD return evidence; a still-open result proves the
+    // spawn was never consulted when the fresh cache covers the query.
+    writeCache({
+      generated_at: new Date().toISOString(),
+      ok: true,
+      hours: 168,
+      lines: [`${localScanTimestamp(new Date(Date.now() - 24 * 3_600_000))}|+15550001111|message to someone else`],
+    });
+    saveOpenLoops(home, [
+      { id: "torie-deposit", topic: "Torie micro-deposit", person: "Torie", phone: "+15012695797", firstSeen: daysAgoYmd(10), lastUpdated: daysAgoYmd(3) },
+    ]);
+
+    const result = await reconcileAllLoops(home);
+    assert.equal(result.stillOpen.length, 1);
+    assert.equal(result.resolved.length, 0);
+  });
+
+  it("since bound older than the cache window falls back to spawn", async () => {
+    writeCache({
+      generated_at: new Date().toISOString(),
+      ok: true,
+      hours: 168,
+      lines: [],
+    });
+    saveOpenLoops(home, [
+      { id: "ancient", topic: "Ancient loop", person: "Old", phone: "+15012695797", firstSeen: "2020-01-01", lastUpdated: "2020-01-01" },
+    ]);
+
+    const result = await reconcileAllLoops(home);
+    assert.equal(result.resolved.length, 1);
+    assert.ok(result.resolved[0].evidence.includes("SPAWNED-EVIDENCE"), "out-of-window query must use the real scan");
+  });
+
+  it("stale cache falls back to spawn", async () => {
+    writeCache({
+      generated_at: new Date(Date.now() - 46 * 60 * 1000).toISOString(),  // 46 min old
+      ok: true,
+      hours: 168,
+      lines: [`${localScanTimestamp(new Date(Date.now() - 24 * 3_600_000))}|+15012695797|would match if fresh`],
+    });
+    saveOpenLoops(home, [
+      { id: "miguel-repay", topic: "Miguel repayment", person: "Miguel", phone: "+15012695797", firstSeen: daysAgoYmd(10), lastUpdated: daysAgoYmd(3) },
+    ]);
+
+    const result = await reconcileAllLoops(home);
+    assert.equal(result.resolved.length, 1);
+    assert.ok(result.resolved[0].evidence.includes("SPAWNED-EVIDENCE"), "stale cache must not be used");
   });
 });
 

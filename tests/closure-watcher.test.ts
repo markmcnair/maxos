@@ -205,6 +205,155 @@ describe("appendClosures", () => {
   });
 });
 
+describe("runClosureWatcher — outgoing-dms cache (FDA-safe path)", () => {
+  let home: string;
+
+  // The dossier phone matches the cache lines below (last-10-digits key).
+  const writeDossier = () => {
+    mkdirSync(join(home, "vault", "Relationships"), { recursive: true });
+    writeFileSync(
+      join(home, "vault", "Relationships", "miguel-thorpe.md"),
+      "---\nname: Miguel Thorpe\norbit: The Chosen\nphone: 501-269-5797\n---\n\nBody.\n",
+    );
+  };
+
+  const writeCache = (obj: unknown) => {
+    writeFileSync(
+      join(home, "workspace", "memory", "outgoing-dms-cache.json"),
+      JSON.stringify(obj),
+    );
+  };
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "watcher-cache-"));
+    mkdirSync(join(home, "workspace", "memory"), { recursive: true });
+    writeDossier();
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("cache hit: derives closures from a fresh cache without spawning imessage-scan", async () => {
+    const now = new Date("2026-05-01T12:00:00");  // local
+    writeCache({
+      generated_at: now.toISOString(),
+      ok: true,
+      exit: 0,
+      hours: 168,
+      lines: [
+        "2026-05-01 11:50:00|+15012695797|Deposit sent, we're square",
+        "and thanks again for waiting",  // continuation line — no ts|recipient| prefix
+        "2026-05-01 11:51:00|+15012695797|Loved “ok”",  // tapback — must be filtered
+        "2026-04-28 09:00:00|+15012695797|old message outside the 15-min window",
+      ],
+    });
+
+    const result = await runClosureWatcher({
+      maxosHome: home,
+      vaultRoot: join(home, "vault"),
+      hours: 0.25,
+      imessageScan: "/nonexistent/imessage-scan",  // spawn would fail — cache must serve
+      now,
+    });
+
+    assert.equal(result.written, 1);
+    const content = readFileSync(
+      join(home, "workspace", "memory", "closures-2026-05-01.md"),
+      "utf-8",
+    );
+    assert.ok(content.includes("- [11:50] [CLOSURE] texted Miguel Thorpe — Deposit sent, we're square"));
+    assert.ok(!content.includes("Loved"), "tapback reactions from cache must be filtered");
+    assert.ok(!content.includes("old message"), "messages outside the window must be filtered");
+  });
+
+  it("anchors the window at generated_at, not now — a lagging cache still yields recent closures", async () => {
+    // Cache generated 30 min ago (fresh, < 45 min). Message sent 35 min ago:
+    // inside [generated_at - 15 min, generated_at], but a now-anchored 15-min
+    // window would slide past it and silently drop the closure.
+    const now = new Date("2026-05-01T12:00:00");
+    const gen = new Date("2026-05-01T11:30:00");
+    writeCache({
+      generated_at: gen.toISOString(),
+      ok: true,
+      hours: 168,
+      lines: ["2026-05-01 11:25:00|+15012695797|Confirmed for Friday"],
+    });
+
+    const result = await runClosureWatcher({
+      maxosHome: home,
+      vaultRoot: join(home, "vault"),
+      hours: 0.25,
+      imessageScan: "/nonexistent/imessage-scan",
+      now,
+    });
+
+    assert.equal(result.written, 1);
+  });
+
+  it("stale cache falls back to spawn (here: failing spawn → no closures)", async () => {
+    const now = new Date("2026-05-01T12:00:00");
+    const gen = new Date(now.getTime() - 46 * 60 * 1000);  // 46 min old → stale
+    writeCache({
+      generated_at: gen.toISOString(),
+      ok: true,
+      hours: 168,
+      lines: ["2026-05-01 11:50:00|+15012695797|Would match if the cache were fresh"],
+    });
+
+    const result = await runClosureWatcher({
+      maxosHome: home,
+      vaultRoot: join(home, "vault"),
+      hours: 0.25,
+      imessageScan: "/nonexistent/imessage-scan",
+      now,
+    });
+
+    assert.equal(result.written, 0, "stale cache must not be used");
+  });
+
+  it("requested window older than the cache window falls back to spawn", async () => {
+    const now = new Date("2026-05-01T12:00:00");
+    writeCache({
+      generated_at: now.toISOString(),
+      ok: true,
+      hours: 168,  // cache covers 7 days
+      lines: ["2026-05-01 11:50:00|+15012695797|Recent message"],
+    });
+
+    const result = await runClosureWatcher({
+      maxosHome: home,
+      vaultRoot: join(home, "vault"),
+      hours: 200,  // > 168 — cache can't cover this lookback
+      imessageScan: "/nonexistent/imessage-scan",
+      now,
+    });
+
+    assert.equal(result.written, 0, "out-of-window request must not be served from cache");
+  });
+
+  it("ok:false cache (agent's scan failed) falls back to spawn", async () => {
+    const now = new Date("2026-05-01T12:00:00");
+    writeCache({
+      generated_at: now.toISOString(),
+      ok: false,
+      hours: 168,
+      lines: ["2026-05-01 11:50:00|+15012695797|Should be ignored"],
+      error: "sqlite-open(rc=23): authorization denied",
+    });
+
+    const result = await runClosureWatcher({
+      maxosHome: home,
+      vaultRoot: join(home, "vault"),
+      hours: 0.25,
+      imessageScan: "/nonexistent/imessage-scan",
+      now,
+    });
+
+    assert.equal(result.written, 0, "ok:false cache must not be trusted");
+  });
+});
+
 describe("runClosureWatcher — periodic prune against dropped-loops.md (Round O)", () => {
   let home: string;
 

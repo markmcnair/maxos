@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { loadOutgoingDmsCache, localScanTimestamp } from "./outgoing-dms-cache.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -113,6 +114,52 @@ export function classifyLoopEvidence(signals: {
   return { kind: "still-open" };
 }
 
+/** Matches the leading timestamp of a genuine imessage-scan line; guards
+ * against multi-line message bodies (which appear as extra lines without the
+ * `ts|recipient|` prefix) accidentally matching a contact filter. */
+const SCAN_LINE_TS_RE = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+
+/**
+ * Derive the answer to `imessage-scan --since <bound> --contact <phone>
+ * --from-me` from the outgoing-dms cache instead of spawning (FDA-safe: the
+ * gateway loses Full Disk Access on every macOS update, so cron-spawned
+ * scans fail with sqlite rc=23).
+ *
+ * Returns null when the query is NOT servable from cache — contact has no
+ * 10-digit key, or the since bound predates the cache window (generated_at
+ * minus hours) — in which case the caller falls back to the real scan.
+ * A non-null `found:false` is an authoritative negative: the cache fully
+ * covers the queried window, so no spawn is needed.
+ *
+ * Cache line timestamps are local "YYYY-MM-DD HH:MM:SS" — lexicographically
+ * comparable with the since bound, which uses the same format.
+ */
+export function imessageEvidenceFromCache(
+  phone: string,
+  sinceBound: string,
+  cache: { generatedAt: Date; hours: number; lines: string[] },
+): { found: boolean; snippet?: string } | null {
+  const digits = phone.includes("@") ? "" : phone.replace(/\D/g, "");
+  if (digits.length < 10) return null;  // email/short-code — can't key reliably
+  const key = digits.slice(-10);
+  const windowStart = localScanTimestamp(
+    new Date(cache.generatedAt.getTime() - cache.hours * 3_600_000),
+  );
+  if (sinceBound < windowStart) return null;  // cache doesn't reach back that far
+  for (const line of cache.lines) {
+    const firstPipe = line.indexOf("|");
+    if (firstPipe < 0) continue;
+    const secondPipe = line.indexOf("|", firstPipe + 1);
+    if (secondPipe < 0) continue;
+    const ts = line.slice(0, firstPipe);
+    if (!SCAN_LINE_TS_RE.test(ts) || ts < sinceBound) continue;
+    const recipient = line.slice(firstPipe + 1, secondPipe);
+    if (!recipient.replace(/\D/g, "").includes(key)) continue;
+    return { found: true, snippet: line.trim().slice(0, 120) };
+  }
+  return { found: false };
+}
+
 async function imessageHasOutgoing(
   phone: string,
   sinceDate: string,
@@ -170,12 +217,30 @@ export async function reconcileAllLoops(
   const stillOpen: LoopUnresolved[] = [];
   const cannotVerify: LoopUnresolved[] = [];
 
+  // Cache-first: one FDA-safe cache read serves every per-loop from-me-since
+  // query it can; only out-of-window/unkeyable queries (or a missing/stale/
+  // not-ok cache) spawn the real imessage-scan.
+  const dmsCache = loadOutgoingDmsCache(maxosHome);
+  const imessageScan = join(maxosHome, "workspace", "tools", "imessage-scan");
+  let viaCache = 0;
+  let viaSpawn = 0;
+
   for (const loop of loops) {
     let imEvidence: { found: boolean; snippet?: string } = { found: false };
     let emailEvidence: { found: boolean; snippet?: string } = { found: false };
 
     if (loop.phone) {
-      imEvidence = await imessageHasOutgoing(loop.phone, `${loop.lastUpdated} 00:00:00`);
+      const sinceBound = `${loop.lastUpdated} 00:00:00`;
+      const fromCache = dmsCache?.ok
+        ? imessageEvidenceFromCache(loop.phone, sinceBound, dmsCache)
+        : null;
+      if (fromCache) {
+        imEvidence = fromCache;
+        viaCache++;
+      } else {
+        imEvidence = await imessageHasOutgoing(loop.phone, sinceBound, imessageScan);
+        viaSpawn++;
+      }
     }
     if (!imEvidence.found && loop.email) {
       emailEvidence = await gwsHasOutgoing(loop.email, loop.lastUpdated);
@@ -197,6 +262,12 @@ export async function reconcileAllLoops(
     } else {
       stillOpen.push({ loop, reason: "No outgoing messages found" });
     }
+  }
+
+  if (viaCache + viaSpawn > 0) {
+    process.stderr.write(
+      `loop-reconciler: imessage evidence via cache for ${viaCache} loop(s), spawn for ${viaSpawn}\n`,
+    );
   }
 
   return { resolved, stillOpen, cannotVerify };

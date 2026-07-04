@@ -14,6 +14,7 @@ import {
   loadDroppedLoopIds,
   pruneOpenLoopsAgainstDropped,
 } from "./dropped-loops-filter.js";
+import { loadOutgoingDmsCache, localScanTimestamp } from "./outgoing-dms-cache.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -169,6 +170,47 @@ async function fetchOutgoingDms(
   }
 }
 
+/**
+ * FDA-safe fetch: prefer the outgoing-dms cache written by the FDA-granted
+ * LaunchAgent (ai.hermes.imsg-ghosted). The gateway loses Full Disk Access on
+ * every macOS update, so spawning imessage-scan from cron yields
+ * "sqlite-open(rc=23): authorization denied". Fall back to the direct spawn
+ * when the cache is missing/stale/not-ok, or when the requested lookback
+ * reaches past the cache window — interactive contexts have FDA, and
+ * older-than-7-day queries need the real scan.
+ */
+async function fetchOutgoingDmsCacheFirst(
+  maxosHome: string,
+  hours: number,
+  imessageScan: string,
+  now: Date,
+): Promise<OutgoingMessage[]> {
+  const cache = loadOutgoingDmsCache(maxosHome, now);
+  const windowMs = hours * 3_600_000;
+  if (cache?.ok) {
+    const cacheWindowStartMs = cache.generatedAt.getTime() - cache.hours * 3_600_000;
+    if (now.getTime() - windowMs >= cacheWindowStartMs) {
+      // Anchor the filter window at generated_at, not now: the cache may lag
+      // up to 45 min, and a now-anchored 15-min window would slide past
+      // everything the cache holds. Overlapping windows across runs are safe
+      // — appendClosures dedups and touchOpenLoops is idempotent per day.
+      const bound = localScanTimestamp(new Date(cache.generatedAt.getTime() - windowMs));
+      const messages: OutgoingMessage[] = [];
+      for (const line of cache.lines) {
+        const msg = parseOutgoingDmLine(line);
+        if (msg && msg.timestamp >= bound) messages.push(msg);
+      }
+      process.stderr.write(
+        `closure-watcher: outgoing-dms via cache (generated ${cache.generatedAt.toISOString()}, ${messages.length} in window)\n`,
+      );
+      return messages;
+    }
+  }
+  const reason = cache === null ? "missing/stale" : !cache.ok ? "not ok" : "window too short";
+  process.stderr.write(`closure-watcher: outgoing-dms via spawn (cache ${reason})\n`);
+  return fetchOutgoingDms(hours, imessageScan);
+}
+
 function touchOpenLoops(maxosHome: string, closedPhones: Set<string>): void {
   if (closedPhones.size === 0) return;
   const loops = loadOpenLoops(maxosHome);
@@ -206,7 +248,7 @@ export async function runClosureWatcher(options: {
   const dossiers = loadDossiers(vaultRoot);
   const phoneIndex = buildDossierPhoneIndex(dossiers);
 
-  const messages = await fetchOutgoingDms(hours, imessageScan);
+  const messages = await fetchOutgoingDmsCacheFirst(maxosHome, hours, imessageScan, now);
   const matches: ClosureMatch[] = [];
   const closedPhones = new Set<string>();
   for (const msg of messages) {
