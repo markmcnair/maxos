@@ -4,6 +4,9 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  firstErrorLine,
+  ghostedCachePath,
+  loadGhostedCache,
   loadOutgoingDmsCache,
   loadRecentMessagesCache,
   localScanTimestamp,
@@ -171,5 +174,86 @@ describe("loadRecentMessagesCache", () => {
     const cache = loadRecentMessagesCache(home, now);
     assert.ok(cache);
     assert.equal(cache.hours, 48);
+  });
+});
+
+describe("loadGhostedCache", () => {
+  let home: string;
+  const now = new Date("2026-07-09T21:00:00Z");
+
+  const writeCache = (obj: unknown) => {
+    writeFileSync(ghostedCachePath(home), JSON.stringify(obj));
+  };
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "ghosted-cache-"));
+    mkdirSync(join(home, "workspace", "memory"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("reads ghosted-cache.json — `rows` key (imsg-ghosted-cache.py shape), not `lines`", () => {
+    writeCache({
+      generated_at: "2026-07-09T20:46:18Z",
+      ok: true,
+      exit: 0,
+      rows: [
+        "2026-07-09 15:45:26|+15016252146|Oh I see! We can do that.",
+        "2026-07-09 13:52:14|+15012690608|Michael Goss — mgoss@leader.one",
+      ],
+      error: "",
+    });
+    const cache = loadGhostedCache(home, now);
+    assert.ok(cache);
+    assert.equal(cache.ok, true);
+    assert.equal(cache.lines.length, 2);
+    assert.match(cache.lines[1], /Michael Goss/);
+  });
+
+  it("applies the same 45-minute staleness rule as the other scan caches", () => {
+    writeCache({
+      generated_at: new Date(now.getTime() - 46 * 60 * 1000).toISOString(),
+      ok: true,
+      rows: ["2026-07-09 15:45:26|+15016252146|hi"],
+    });
+    assert.equal(loadGhostedCache(home, now), null);
+  });
+
+  it("defaults hours to 24 (the agent scans --ghosted --hours 24)", () => {
+    writeCache({
+      generated_at: now.toISOString(),
+      ok: true,
+      rows: [],
+    });
+    const cache = loadGhostedCache(home, now);
+    assert.ok(cache);
+    assert.equal(cache.hours, 24);
+  });
+
+  it("returns null when missing", () => {
+    assert.equal(loadGhostedCache(home, now), null);
+  });
+});
+
+describe("firstErrorLine", () => {
+  it("returns the first non-empty line of a multi-line error (traceback stays out of logs)", () => {
+    const err = new Error(
+      "Command failed: /x/imessage-scan --outgoing-dms\nTraceback (most recent call last):\n  File \"x\", line 1\nsqlite3.OperationalError: authorization denied",
+    );
+    assert.equal(firstErrorLine(err), "Command failed: /x/imessage-scan --outgoing-dms");
+  });
+
+  it("skips leading blank lines", () => {
+    assert.equal(firstErrorLine(new Error("\n\n  real cause here\nmore")), "real cause here");
+  });
+
+  it("stringifies non-Error values", () => {
+    assert.equal(firstErrorLine("plain string failure"), "plain string failure");
+  });
+
+  it("falls back for empty messages", () => {
+    assert.equal(firstErrorLine(new Error("")), "unknown error");
   });
 });

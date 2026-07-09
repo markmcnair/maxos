@@ -13,13 +13,17 @@ import { join } from "node:path";
  * first and only spawn as a fallback — interactive contexts have FDA, and
  * queries older than a cache's window need the real scan.
  *
- * Two caches, same JSON shape:
+ * Three caches, same JSON shape (modulo the lines-array key):
  *   - outgoing-dms-cache.json — `imessage-scan --outgoing-dms`, trailing
  *     168h, Mark's outgoing DMs only, group chats excluded. Lines:
  *     "YYYY-MM-DD HH:MM:SS|recipient_handle|text".
  *   - recent-messages-cache.json — plain `imessage-scan`, trailing 48h,
  *     BOTH directions (sender field is "Mark" for outgoing, the handle or
  *     resolved name for incoming). Lines: "YYYY-MM-DD HH:MM:SS|sender|text".
+ *   - ghosted-cache.json — `imessage-scan --ghosted --hours 24
+ *     --resolve-names <vault>`, and the array key is `rows` (not `lines`,
+ *     an imsg-ghosted-cache.py historical accident). Lines:
+ *     "YYYY-MM-DD HH:MM:SS|phone|[Name — ]text".
  *
  * Shape: { "generated_at": "<UTC ISO, Z>", "ok": true, "exit": 0,
  *          "hours": N, "lines": [...], "error": "" }
@@ -58,6 +62,25 @@ export function recentMessagesCachePath(maxosHome: string): string {
   return join(maxosHome, "workspace", "memory", "recent-messages-cache.json");
 }
 
+export function ghostedCachePath(maxosHome: string): string {
+  return join(maxosHome, "workspace", "memory", "ghosted-cache.json");
+}
+
+/**
+ * First non-empty line of an error, trimmed. Spawn failures from a python
+ * imessage-scan carry the whole traceback in err.message — logging that
+ * wholesale is what used to flood the cron log and keep healthcheck alarming
+ * for hours. One line is enough to diagnose; the rest stays out of the log.
+ */
+export function firstErrorLine(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  for (const line of msg.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed) return trimmed;
+  }
+  return "unknown error";
+}
+
 /**
  * Format an instant as local "YYYY-MM-DD HH:MM:SS" — the format imessage-scan
  * emits per line. Strings in this format compare lexicographically in
@@ -79,6 +102,7 @@ function loadScanCache(
   path: string,
   defaultHours: number,
   now: Date,
+  linesKey: "lines" | "rows" = "lines",
 ): ImessageScanCache | null {
   let raw: unknown;
   try {
@@ -92,8 +116,9 @@ function loadScanCache(
   if (Number.isNaN(generatedAt.getTime())) return null;
   if (now.getTime() - generatedAt.getTime() > OUTGOING_DMS_CACHE_MAX_AGE_MS) return null;
   const hours = typeof o.hours === "number" && o.hours > 0 ? o.hours : defaultHours;
-  const lines = Array.isArray(o.lines)
-    ? o.lines.filter((l): l is string => typeof l === "string")
+  const rawLines = o[linesKey];
+  const lines = Array.isArray(rawLines)
+    ? rawLines.filter((l): l is string => typeof l === "string")
     : [];
   return { ok: o.ok === true, generatedAt, hours, lines };
 }
@@ -112,4 +137,15 @@ export function loadRecentMessagesCache(
   now: Date = new Date(),
 ): ImessageScanCache | null {
   return loadScanCache(recentMessagesCachePath(maxosHome), 48, now);
+}
+
+/**
+ * Load the ghosted cache (24h of unanswered inbound DMs, names resolved
+ * against the vault). Note the `rows` array key.
+ */
+export function loadGhostedCache(
+  maxosHome: string,
+  now: Date = new Date(),
+): ImessageScanCache | null {
+  return loadScanCache(ghostedCachePath(maxosHome), 24, now, "rows");
 }

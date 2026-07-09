@@ -11,7 +11,7 @@ import {
   type MessageInput,
   type Record_,
 } from "./commitment-extractor.js";
-import { loadOutgoingDmsCache, localScanTimestamp } from "./outgoing-dms-cache.js";
+import { firstErrorLine, loadOutgoingDmsCache, localScanTimestamp } from "./outgoing-dms-cache.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -49,8 +49,10 @@ interface OutgoingIMessage {
 async function fetchSentEmails(
   account: "personal" | "emprise",
   hoursBack: number,
+  wrapperOverride?: string,
 ): Promise<SentEmail[]> {
-  const wrapper = account === "personal" ? "gws-personal" : "gws-emprise";
+  const wrapper = wrapperOverride
+    ?? (account === "personal" ? "gws-personal" : "gws-emprise");
   const params = JSON.stringify({
     userId: "me",
     q: `in:sent newer_than:${Math.max(1, Math.ceil(hoursBack / 24))}d`,
@@ -64,20 +66,33 @@ async function fetchSentEmails(
       { timeout: 15_000, maxBuffer: 4 * 1024 * 1024 },
     );
     listOut = r.stdout;
-  } catch {
-    return [];
+  } catch (err) {
+    // This failure used to be swallowed (return []) — email-channel
+    // commitment tracking could die invisibly, exactly like the fixed
+    // iMessage swallow. Log ONE concise line and rethrow so sweepOutbound
+    // records it in errors[].
+    const msg = `${wrapper} sent-mail list failed (${firstErrorLine(err)})`;
+    process.stderr.write(`commitment-sweep: ${msg}\n`);
+    throw new Error(msg);
   }
   const idx = listOut.indexOf("{");
-  if (idx < 0) return [];
+  if (idx < 0) {
+    const msg = `${wrapper} sent-mail list returned no JSON`;
+    process.stderr.write(`commitment-sweep: ${msg}\n`);
+    throw new Error(msg);
+  }
   let parsedList: { messages?: Array<{ id: string }> };
   try {
     parsedList = JSON.parse(listOut.slice(idx));
   } catch {
-    return [];
+    const msg = `${wrapper} sent-mail list returned unparseable JSON`;
+    process.stderr.write(`commitment-sweep: ${msg}\n`);
+    throw new Error(msg);
   }
-  if (!parsedList.messages) return [];
+  if (!parsedList.messages) return [];  // legitimately empty sent folder
   const cutoff = Date.now() - hoursBack * 3600_000;
   const out: SentEmail[] = [];
+  let getFailures = 0;
   for (const { id } of parsedList.messages.slice(0, 50)) {
     try {
       const msgParams = JSON.stringify({ userId: "me", id, format: "metadata", metadataHeaders: ["To", "Date", "Subject"] });
@@ -106,8 +121,13 @@ async function fetchSentEmails(
         account,
       });
     } catch {
-      // skip
+      getFailures++;  // one bad message must not kill the batch — but count it
     }
+  }
+  if (getFailures > 0) {
+    process.stderr.write(
+      `commitment-sweep: ${wrapper} sent-mail get failed for ${getFailures}/${Math.min(parsedList.messages.length, 50)} messages\n`,
+    );
   }
   return out;
 }
@@ -134,37 +154,36 @@ function parseOutgoingIMessageLine(line: string): OutgoingIMessage | null {
   if (!SCAN_LINE_TS_RE.test(ts)) return null;
   const recipient = line.slice(firstPipe + 1, secondPipe);
   const body = line.slice(secondPipe + 1);
-  // Convert "YYYY-MM-DD HH:MM:SS" to ISO
-  const isoTs = new Date(ts.replace(" ", "T") + "Z").toISOString();
+  // Convert local-naive "YYYY-MM-DD HH:MM:SS" to a UTC ISO instant.
+  // imessage-scan emits LOCAL wall-clock time; new Date("…T…") without a
+  // zone suffix parses as local, so toISOString() yields the true instant.
+  // (The old code appended "Z" — stamping local time as UTC and skewing
+  // sentAt/ts by the UTC offset, 5-6h in Central Time.)
+  const isoTs = new Date(ts.replace(" ", "T")).toISOString();
   const messageId = `imsg-${ts}-${recipient.replace(/\D/g, "").slice(-10)}`;
   return { messageId, recipient, sentAt: isoTs, body };
 }
 
+// No try/catch here: the failure must stay loud (430+ FDA denials used to
+// be swallowed as `return []`). The cache-first caller catches it and
+// condenses it to ONE log line + one errors[] entry — logging the raw
+// err.message dumped the whole python traceback into the cron log and kept
+// healthcheck alarming for hours.
 async function fetchOutgoingIMessages(
   hoursBack: number,
   imessageScan: string,
 ): Promise<OutgoingIMessage[]> {
-  try {
-    const { stdout } = await execFileAsync(
-      imessageScan,
-      ["--outgoing-dms", "--hours", String(hoursBack), "--limit", "200"],
-      { timeout: 15_000, maxBuffer: 8 * 1024 * 1024 },
-    );
-    const out: OutgoingIMessage[] = [];
-    for (const line of stdout.split("\n")) {
-      const msg = parseOutgoingIMessageLine(line);
-      if (msg) out.push(msg);
-    }
-    return out;
-  } catch (err) {
-    // This failure used to be swallowed (return []) — 430+ FDA denials
-    // across the imessage consumers were invisible in this sweep's logs.
-    // Log loudly AND rethrow so sweepOutbound records it in errors[].
-    process.stderr.write(
-      `commitment-sweep: imessage-scan spawn failed (${imessageScan}): ${err instanceof Error ? err.message : String(err)}\n`,
-    );
-    throw err;
+  const { stdout } = await execFileAsync(
+    imessageScan,
+    ["--outgoing-dms", "--hours", String(hoursBack), "--limit", "200"],
+    { timeout: 15_000, maxBuffer: 8 * 1024 * 1024 },
+  );
+  const out: OutgoingIMessage[] = [];
+  for (const line of stdout.split("\n")) {
+    const msg = parseOutgoingIMessageLine(line);
+    if (msg) out.push(msg);
   }
+  return out;
 }
 
 /**
@@ -197,7 +216,16 @@ async function fetchOutgoingIMessagesCacheFirst(
   }
   const reason = cache === null ? "missing/stale" : !cache.ok ? "not ok" : "window too short";
   process.stderr.write(`commitment-sweep: outgoing iMessages via spawn (cache ${reason})\n`);
-  return fetchOutgoingIMessages(hoursBack, imessageScan);
+  try {
+    return await fetchOutgoingIMessages(hoursBack, imessageScan);
+  } catch (err) {
+    // Graceful fallback: inside the gateway the spawn hits FDA-denied and
+    // used to vomit a full python traceback into the cron log (healthcheck
+    // then alarmed for hours). ONE concise line; the cycle skips cleanly.
+    const msg = `outgoing-dms unavailable this cycle: cache ${reason} and spawn failed (${firstErrorLine(err)}) — skipping`;
+    process.stderr.write(`commitment-sweep: ${msg}\n`);
+    throw new Error(msg);  // sweepOutbound records it in errors[]
+  }
 }
 
 // ───── Sweep orchestrator ─────
@@ -221,12 +249,16 @@ export async function sweepOutbound(
     imessageScan?: string;
     deps?: SweepDeps;
     markEmail?: string;     // for is-from-Mark detection in emails
+    /** Override the gws CLI wrapper per account (tests use a fake binary). */
+    gwsWrappers?: { personal?: string; emprise?: string };
   } = {},
 ): Promise<SweepResult> {
   const hoursBack = options.hoursBack ?? DEFAULT_LOOKBACK_HOURS;
   const imessageScan = options.imessageScan
     ?? `${home}/workspace/tools/imessage-scan`;
-  const fetchSent = options.deps?.fetchSent ?? fetchSentEmails;
+  const fetchSent = options.deps?.fetchSent
+    ?? ((account: "personal" | "emprise", hours: number) =>
+      fetchSentEmails(account, hours, options.gwsWrappers?.[account]));
   const fetchIMessages = options.deps?.fetchIMessages
     ?? ((hours: number, scanPath: string) => fetchOutgoingIMessagesCacheFirst(home, hours, scanPath));
   const markEmail = options.markEmail ?? "markmcnair2@gmail.com";

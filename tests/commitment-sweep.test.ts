@@ -231,4 +231,135 @@ describe("sweepOutbound — outgoing-dms cache-first iMessage fetch (FDA-safe)",
     assert.equal(r.scanned, 1, "valid line survives, garbage line is skipped");
     assert.ok(r.newCommitments >= 1);
   });
+
+  it("stores sentAt as the correct UTC instant for a LOCAL scan timestamp (5-6h skew fix)", async () => {
+    // Scan/cache timestamps are local naive "YYYY-MM-DD HH:MM:SS". The old
+    // parser appended "Z" — stamping local wall-clock as UTC, skewing
+    // sentAt/ts by the UTC offset (5-6h in Central Time).
+    const localTs = hoursAgoTs(1);
+    writeCache({
+      generated_at: new Date().toISOString(),
+      ok: true,
+      hours: 168,
+      lines: [`${localTs}|+15015551234|I'll send the tz-marker doc by Friday.`],
+    });
+    const r = await sweepOutbound(home, {
+      hoursBack: 6,
+      deps: noEmails,
+      imessageScan: "/nonexistent/imessage-scan",
+    });
+    assert.ok(r.newCommitments >= 1);
+    const line = readFileSync(join(home, "workspace", "memory", "commitments.jsonl"), "utf-8")
+      .trim().split("\n").map((l) => JSON.parse(l))
+      .find((rec) => /tz-marker/.test(rec.commitment));
+    assert.ok(line, "tz-marker record must exist");
+    // new Date("YYYY-MM-DDTHH:MM:SS") parses as LOCAL time — the correct instant.
+    const expected = new Date(localTs.replace(" ", "T")).toISOString();
+    assert.equal(line.ts, expected, `local ${localTs} must convert to UTC instant ${expected}, got ${line.ts}`);
+  });
+});
+
+describe("sweepOutbound — gws email fetch failure is LOUD (was silently swallowed)", () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "sweep-gws-"));
+    mkdirSync(join(home, "workspace", "memory"), { recursive: true });
+  });
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("records a spawn-failed gws wrapper in errors[] for both accounts", async () => {
+    const r = await sweepOutbound(home, {
+      hoursBack: 6,
+      deps: { fetchIMessages: async () => [] },
+      gwsWrappers: {
+        personal: "/nonexistent/gws-personal",
+        emprise: "/nonexistent/gws-emprise",
+      },
+    });
+    assert.ok(
+      r.errors.some((e) => e.startsWith("fetchSent personal:")),
+      `personal gws failure must land in errors[], got: ${JSON.stringify(r.errors)}`,
+    );
+    assert.ok(
+      r.errors.some((e) => e.startsWith("fetchSent emprise:")),
+      `emprise gws failure must land in errors[], got: ${JSON.stringify(r.errors)}`,
+    );
+  });
+
+  it("keeps errors[] entries single-line (no traceback vomit)", async () => {
+    const r = await sweepOutbound(home, {
+      hoursBack: 6,
+      deps: { fetchIMessages: async () => [] },
+      gwsWrappers: {
+        personal: "/nonexistent/gws-personal",
+        emprise: "/nonexistent/gws-emprise",
+      },
+    });
+    for (const e of r.errors) {
+      assert.ok(!e.includes("\n"), `errors[] entry must be one line, got: ${JSON.stringify(e)}`);
+    }
+  });
+});
+
+describe("sweepOutbound — graceful spawn fallback (FDA-denied traceback stays out of the log)", () => {
+  let home: string;
+  let stderrWrites: string[];
+  let origWrite: typeof process.stderr.write;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "sweep-fallback-"));
+    mkdirSync(join(home, "workspace", "memory"), { recursive: true });
+    stderrWrites = [];
+    origWrite = process.stderr.write;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (process.stderr as any).write = (chunk: unknown) => {
+      stderrWrites.push(String(chunk));
+      return true;
+    };
+  });
+  afterEach(() => {
+    process.stderr.write = origWrite;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("stale cache + traceback-vomiting scan → ONE concise line, cycle skips cleanly", async () => {
+    // Fake imessage-scan that reproduces the FDA-denied failure mode: a full
+    // python traceback on stderr, nonzero exit. Cron log used to get the
+    // whole traceback; healthcheck then alarmed for hours.
+    const toolsDir = join(home, "workspace", "tools");
+    mkdirSync(toolsDir, { recursive: true });
+    const fake = join(toolsDir, "imessage-scan");
+    writeFileSync(
+      fake,
+      `#!/bin/sh
+cat >&2 <<'EOF'
+Traceback (most recent call last):
+  File "/x/imessage-scan", line 464, in <module>
+    main()
+sqlite3.OperationalError: sqlite-open(rc=23): authorization denied
+EOF
+exit 1
+`,
+      { mode: 0o755 },
+    );
+    // No cache file — the missing/stale path — so the fallback spawns `fake`.
+    const r = await sweepOutbound(home, {
+      hoursBack: 6,
+      deps: { fetchSent: async () => [] },
+      imessageScan: fake,
+    });
+    assert.equal(r.scanned, 0, "cycle skips cleanly");
+    assert.equal(r.errors.length, 1);
+    assert.match(r.errors[0], /outgoing-dms unavailable this cycle/);
+    assert.match(r.errors[0], /skipping/);
+    assert.ok(!r.errors[0].includes("\n"), "errors[] entry must be one line");
+    const log = stderrWrites.join("");
+    assert.match(log, /outgoing-dms unavailable this cycle/);
+    assert.doesNotMatch(log, /Traceback/, "python traceback must not reach the log");
+    const failureLines = stderrWrites.filter((l) => l.includes("spawn failed"));
+    assert.equal(failureLines.length, 1, "exactly one concise failure line");
+  });
 });

@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { firstErrorLine, loadGhostedCache, localScanTimestamp } from "./outgoing-dms-cache.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -51,14 +52,52 @@ export function parseAuthoritativeGhosted(raw: string): GhostedEntry[] {
 }
 
 /**
- * Fetch the authoritative ghosted list by shelling out to imessage-scan.
+ * Fetch the authoritative ghosted list — CACHE-FIRST (FDA-safe).
+ *
+ * Prefer ghosted-cache.json, written every 15 minutes by the FDA-granted
+ * LaunchAgent (ai.hermes.imsg-ghosted). The gateway loses Full Disk Access
+ * on every weekly update, so an in-gateway `imessage-scan --ghosted` spawn
+ * dies with "sqlite-open(rc=23): authorization denied" — and this function
+ * used to swallow that (`catch { return [] }`), which stripInvalidGhosted
+ * then read as "nobody is validly ghosted" and wiped the ENTIRE Ghosted
+ * section. Same 45-minute staleness rule as the other scan caches.
+ *
+ * Returns null (NOT []) when the cache is unusable AND the spawn fails, so
+ * the caller can skip the strip pass instead of treating total failure as
+ * an empty authoritative list. Failure is logged as one concise line — the
+ * python traceback stays out of the cron log.
  */
 export async function fetchAuthoritativeGhosted(options: {
   maxosHome?: string;
   hours?: number;
   since?: string;
-}): Promise<GhostedEntry[]> {
+  now?: Date;
+}): Promise<GhostedEntry[] | null> {
   const maxosHome = options.maxosHome ?? process.env.MAXOS_HOME ?? join(homedir(), ".hermes");
+  const now = options.now ?? new Date();
+
+  // `--since` takes an arbitrary timestamp the fixed cache window can't be
+  // trusted to cover — those queries go straight to the spawn.
+  let cacheReason = "since-query";
+  if (!options.since) {
+    const hours = options.hours ?? 24;
+    const cache = loadGhostedCache(maxosHome, now);
+    if (cache?.ok && hours <= cache.hours) {
+      // Anchor the window at generated_at (cache may lag up to 45 min).
+      // Entry timestamps are local "YYYY-MM-DD HH:MM:SS" — lexicographically
+      // comparable against localScanTimestamp output.
+      const bound = localScanTimestamp(new Date(cache.generatedAt.getTime() - hours * 3_600_000));
+      const entries = parseAuthoritativeGhosted(cache.lines.join("\n"))
+        .filter((e) => e.timestamp >= bound);
+      process.stderr.write(
+        `ghosted-filter: ghosted via cache (generated ${cache.generatedAt.toISOString()}, ${entries.length} in window)\n`,
+      );
+      return entries;
+    }
+    cacheReason = cache === null ? "missing/stale" : !cache.ok ? "not ok" : "window too short";
+    process.stderr.write(`ghosted-filter: ghosted via spawn (cache ${cacheReason})\n`);
+  }
+
   const scan = join(maxosHome, "workspace", "tools", "imessage-scan");
   const vault = join(maxosHome, "vault");
   const args = ["--ghosted", "--resolve-names", vault];
@@ -70,8 +109,11 @@ export async function fetchAuthoritativeGhosted(options: {
       maxBuffer: 2 * 1024 * 1024,
     });
     return parseAuthoritativeGhosted(stdout);
-  } catch {
-    return [];
+  } catch (err) {
+    process.stderr.write(
+      `ghosted-filter: ghosted unavailable this cycle: cache ${cacheReason} and spawn failed (${firstErrorLine(err)}) — skipping\n`,
+    );
+    return null;
   }
 }
 

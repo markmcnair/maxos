@@ -868,15 +868,26 @@ export class Gateway {
       const authoritative = await fetchAuthoritativeGhosted({
         maxosHome: MAXOS_HOME,
         hours: kit === "morning-brief" ? 24 : 24,
-      }).catch(() => []);
-      const afterGhosted = stripInvalidGhosted(filtered, authoritative);
-      if (afterGhosted !== filtered) {
-        logger.info("gateway:oneshot:ghosted_filter_applied", {
+      }).catch(() => null);
+      if (authoritative === null) {
+        // Cache unusable AND spawn failed (the FDA-denied-inside-the-gateway
+        // shape). Skip the strip pass: an empty list here would wipe the
+        // entire Ghosted section, silently converting "scan broken" into
+        // "nobody ghosted".
+        logger.warn("gateway:oneshot:ghosted_filter_skipped", {
           task: taskName,
-          authoritativeCount: authoritative.length,
-          bytesRemoved: filtered.length - afterGhosted.length,
+          reason: "authoritative ghosted unavailable (cache stale + spawn failed)",
         });
-        filtered = afterGhosted;
+      } else {
+        const afterGhosted = stripInvalidGhosted(filtered, authoritative);
+        if (afterGhosted !== filtered) {
+          logger.info("gateway:oneshot:ghosted_filter_applied", {
+            task: taskName,
+            authoritativeCount: authoritative.length,
+            bytesRemoved: filtered.length - afterGhosted.length,
+          });
+          filtered = afterGhosted;
+        }
       }
     }
 

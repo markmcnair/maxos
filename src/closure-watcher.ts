@@ -14,7 +14,7 @@ import {
   loadDroppedLoopIds,
   pruneOpenLoopsAgainstDropped,
 } from "./dropped-loops-filter.js";
-import { loadOutgoingDmsCache, localScanTimestamp } from "./outgoing-dms-cache.js";
+import { firstErrorLine, loadOutgoingDmsCache, localScanTimestamp } from "./outgoing-dms-cache.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -143,31 +143,25 @@ export function appendClosures(maxosHome: string, date: Date, entries: string[])
 
 // ───── Subprocess + orchestration ────────────────────────────────────────
 
+// No try/catch here: the caller (fetchOutgoingDmsCacheFirst) condenses a
+// spawn failure to ONE concise stderr line. Logging the raw err.message —
+// which carries the whole python traceback on the FDA-denied failure —
+// flooded the cron log and kept healthcheck alarming for hours.
 async function fetchOutgoingDms(
   hours: number,
   imessageScan: string,
 ): Promise<OutgoingMessage[]> {
-  try {
-    const { stdout } = await execFileAsync(
-      imessageScan,
-      ["--outgoing-dms", "--hours", String(hours), "--limit", "500"],
-      { timeout: 15_000, maxBuffer: 4 * 1024 * 1024 },
-    );
-    const messages: OutgoingMessage[] = [];
-    for (const line of stdout.split("\n")) {
-      const msg = parseOutgoingDmLine(line);
-      if (msg) messages.push(msg);
-    }
-    return messages;
-  } catch (err) {
-    // Audit P1-2: differentiate "no closures because nothing texted" from
-    // "no closures because the scanner crashed" — the latter is a health
-    // signal worth surfacing in stderr → daemon.stderr.log → digest.
-    process.stderr.write(
-      `closure-watcher: imessage-scan failed (${imessageScan}): ${err instanceof Error ? err.message : String(err)}\n`,
-    );
-    return [];
+  const { stdout } = await execFileAsync(
+    imessageScan,
+    ["--outgoing-dms", "--hours", String(hours), "--limit", "500"],
+    { timeout: 15_000, maxBuffer: 4 * 1024 * 1024 },
+  );
+  const messages: OutgoingMessage[] = [];
+  for (const line of stdout.split("\n")) {
+    const msg = parseOutgoingDmLine(line);
+    if (msg) messages.push(msg);
   }
+  return messages;
 }
 
 /**
@@ -208,7 +202,17 @@ async function fetchOutgoingDmsCacheFirst(
   }
   const reason = cache === null ? "missing/stale" : !cache.ok ? "not ok" : "window too short";
   process.stderr.write(`closure-watcher: outgoing-dms via spawn (cache ${reason})\n`);
-  return fetchOutgoingDms(hours, imessageScan);
+  try {
+    return await fetchOutgoingDms(hours, imessageScan);
+  } catch (err) {
+    // Graceful fallback (audit P1-2 kept loud, traceback kept out): inside
+    // the gateway the spawn hits FDA-denied; ONE concise line distinguishes
+    // "scanner broken" from "nothing texted", and the cycle skips cleanly.
+    process.stderr.write(
+      `closure-watcher: outgoing-dms unavailable this cycle: cache ${reason} and spawn failed (${firstErrorLine(err)}) — skipping\n`,
+    );
+    return [];
+  }
 }
 
 function touchOpenLoops(maxosHome: string, closedPhones: Set<string>): void {

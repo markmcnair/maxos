@@ -448,3 +448,63 @@ describe("runClosureWatcher — periodic prune against dropped-loops.md (Round O
     assert.equal(after[0].id, "x");
   });
 });
+
+describe("runClosureWatcher — graceful spawn fallback (FDA-denied traceback stays out of the log)", () => {
+  let home: string;
+  let stderrWrites: string[];
+  let origWrite: typeof process.stderr.write;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "watcher-fallback-"));
+    mkdirSync(join(home, "workspace", "memory"), { recursive: true });
+    mkdirSync(join(home, "vault"), { recursive: true });
+    stderrWrites = [];
+    origWrite = process.stderr.write;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (process.stderr as any).write = (chunk: unknown) => {
+      stderrWrites.push(String(chunk));
+      return true;
+    };
+  });
+
+  afterEach(() => {
+    process.stderr.write = origWrite;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("stale cache + traceback-vomiting scan → ONE concise line, cycle skips cleanly", async () => {
+    // Fake imessage-scan reproducing the FDA-denied failure inside the
+    // gateway: full python traceback on stderr, nonzero exit. The cron log
+    // used to receive the whole traceback and healthcheck alarmed for hours.
+    const toolsDir = join(home, "workspace", "tools");
+    mkdirSync(toolsDir, { recursive: true });
+    const fake = join(toolsDir, "imessage-scan");
+    writeFileSync(
+      fake,
+      `#!/bin/sh
+cat >&2 <<'EOF'
+Traceback (most recent call last):
+  File "/x/imessage-scan", line 464, in <module>
+    main()
+sqlite3.OperationalError: sqlite-open(rc=23): authorization denied
+EOF
+exit 1
+`,
+      { mode: 0o755 },
+    );
+    // No cache file — the missing/stale path — so the fallback spawns `fake`.
+    const result = await runClosureWatcher({
+      maxosHome: home,
+      vaultRoot: join(home, "vault"),
+      hours: 0.25,
+      imessageScan: fake,
+    });
+    assert.equal(result.written, 0, "cycle skips cleanly, no throw");
+    const log = stderrWrites.join("");
+    assert.match(log, /outgoing-dms unavailable this cycle/);
+    assert.match(log, /skipping/);
+    assert.doesNotMatch(log, /Traceback/, "python traceback must not reach the log");
+    const failureLines = stderrWrites.filter((l) => l.includes("spawn failed"));
+    assert.equal(failureLines.length, 1, "exactly one concise failure line");
+  });
+});
