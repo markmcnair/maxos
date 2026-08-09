@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   runGoogleTasksReconciler,
+  reconcileTasks,
   exitCodeForResult,
   formatRunSummary,
 } from "../src/google-tasks-reconciler.js";
@@ -48,6 +49,65 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(home, { recursive: true, force: true });
+});
+
+describe("reconcileTasks — a stale completed task must not close a re-raised loop", () => {
+  const task = (id: string, loopId: string, status: "needsAction" | "completed") => ({
+    id,
+    title: "t",
+    notes: `[loop:${loopId}]`,
+    status,
+    updated: "2026-07-07T12:00:00Z",
+  });
+
+  it("does NOT close an UNTRACKED loop against a leftover completed task — it creates a fresh one", () => {
+    // hudson-jones-monday-meeting recurs weekly. Last week's task is still in
+    // the bucket as completed (Google keeps completed tasks ~30 days). This
+    // week's loop is re-raised with the same slug and is NOT in state yet.
+    const d = reconcileTasks({
+      loops: [loop("hudson-jones-monday-meeting", "Confirm Hudson for Monday 9am")],
+      tasks: [task("last-week-task", "hudson-jones-monday-meeting", "completed")],
+      state: { loopToTask: {} },
+    });
+    assert.equal(d.closures.length, 0, "closing an unmirrored live commitment loses it silently");
+    assert.equal(d.drops.length, 0);
+    assert.equal(d.creates.length, 1, "the re-raised loop needs a fresh task");
+    assert.equal(d.creates[0].id, "hudson-jones-monday-meeting");
+  });
+
+  it("DOES close a loop against the exact task it tracked", () => {
+    const d = reconcileTasks({
+      loops: [loop("a", "Loop A")],
+      tasks: [task("task-1", "a", "completed")],
+      state: { loopToTask: { a: "task-1" } },
+    });
+    assert.equal(d.closures.length, 1);
+    assert.equal(d.closures[0].loopId, "a");
+    assert.equal(d.creates.length, 0);
+  });
+
+  it("does not close when the tracked id differs from the completed task present", () => {
+    // We tracked task-1; what is in the list is a DIFFERENT completed task
+    // carrying the same marker. That is not proof our task was completed.
+    const d = reconcileTasks({
+      loops: [loop("a", "Loop A")],
+      tasks: [task("some-other-task", "a", "completed")],
+      state: { loopToTask: { a: "task-1" } },
+    });
+    assert.equal(d.closures.length, 0);
+  });
+
+  it("still treats an active tracked task as open", () => {
+    const d = reconcileTasks({
+      loops: [loop("a", "Loop A")],
+      tasks: [task("task-1", "a", "needsAction")],
+      state: { loopToTask: { a: "task-1" } },
+    });
+    assert.equal(d.closures.length, 0);
+    assert.equal(d.drops.length, 0);
+    assert.equal(d.creates.length, 0);
+    assert.equal(d.newState.loopToTask.a, "task-1");
+  });
 });
 
 describe("exitCodeForResult", () => {

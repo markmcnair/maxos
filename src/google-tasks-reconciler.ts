@@ -168,7 +168,25 @@ export function reconcileTasks(input: ReconcileTasksInput): ReconcileTasksDecisi
     }
 
     if (liveTask && liveTask.status === "completed") {
-      closures.push({ loopId: loop.id, title: loop.topic });
+      // Only OUR task's completion closes the loop. Google keeps completed
+      // tasks visible for ~30 days, and loop ids are LLM-minted slugs that
+      // recur by nature (e.g. hudson-jones-monday-meeting). Honouring any
+      // completed task carrying the marker meant a re-raised loop was closed
+      // instantly against last week's leftover — removed from open-loops with
+      // a [CLOSURE] line asserting a completion that never happened, and never
+      // mirrored to a task at all (zero API calls).
+      //
+      // This used to be self-limiting: stale completed tasks drift to high
+      // positions and fell outside the un-paginated first 100. Now that
+      // listTasks returns the whole list, they never fall out of view — so the
+      // guard has to be explicit.
+      if (trackedTaskId && liveTask.id === trackedTaskId) {
+        closures.push({ loopId: loop.id, title: loop.topic });
+        continue;
+      }
+      // A leftover from an earlier incarnation of this id: ignore it and mirror
+      // the loop afresh.
+      creates.push(loop);
       continue;
     }
 
