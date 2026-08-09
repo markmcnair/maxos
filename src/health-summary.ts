@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { readAndSummarize, type OutboundSummary } from "./outbound-log.js";
+import { readSchedulerLastRun } from "./scheduler-state.js";
 
 export interface HealthSummaryInput {
   maxosHome: string;
@@ -101,6 +102,16 @@ export interface HealthSummaryParts {
   loops: {
     openCount: number;
     googleTasksTracked: number;
+    /**
+     * Age of the last successful Google Tasks reconcile, from the state file's
+     * mtime. The reconciler rewrites that file on every successful run, so this
+     * is a real liveness signal — unlike the tracked COUNT, which keeps
+     * reporting the last-known number forever after the API stops answering.
+     * undefined when the file has never been written.
+     */
+    googleTasksSyncAgeMs?: number;
+    /** True when no successful reconcile has landed inside the stale window. */
+    googleTasksStale: boolean;
   };
   schedulerHighlights: {
     disabled: string[];
@@ -112,6 +123,17 @@ export interface HealthSummaryParts {
     closureCount: number;
   };
   outbound24h: OutboundSummary;
+}
+
+/**
+ * Render the Google Tasks mirror's freshness beside its count, so a dead
+ * integration cannot present as a healthy number.
+ */
+export function formatMirrorAge(loops: HealthSummaryParts["loops"]): string {
+  if (loops.googleTasksSyncAgeMs === undefined) return " (never synced ⚠️)";
+  const mins = Math.round(loops.googleTasksSyncAgeMs / 60_000);
+  const ago = mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`;
+  return loops.googleTasksStale ? ` (last sync ${ago} ⚠️ STALE)` : ` (last sync ${ago})`;
 }
 
 /**
@@ -127,7 +149,10 @@ export function buildHealthSummaryParts(input: HealthSummaryInput): HealthSummar
   const scheduler = state.scheduler ?? {};
   const failures = scheduler.failures ?? {};
   const disabled = scheduler.disabled ?? [];
-  const lastRun = scheduler.lastRun ?? {};
+  // Merged across legacy state.json and the live Hermes ticker state file —
+  // under Hermes the former does not exist, so reading only it made every
+  // scheduler highlight permanently empty (silence reading as health).
+  const lastRun = readSchedulerLastRun(maxosHome);
 
   // Open loops
   const openLoopsRaw = safeReadJSON<unknown[]>(
@@ -135,13 +160,24 @@ export function buildHealthSummaryParts(input: HealthSummaryInput): HealthSummar
   );
   const openCount = Array.isArray(openLoopsRaw) ? openLoopsRaw.length : 0;
 
-  // Google Tasks tracked count
-  const gtState = safeReadJSON<{ loopToTask?: Record<string, string> }>(
-    join(maxosHome, "workspace", "memory", "google-tasks-state.json"),
-  );
+  // Google Tasks: tracked count AND how fresh the mirror is. The count alone
+  // is read straight off local disk and never touches the API, so on its own it
+  // reports a happy number indefinitely after Google stops answering.
+  const gtStatePath = join(maxosHome, "workspace", "memory", "google-tasks-state.json");
+  const gtState = safeReadJSON<{ loopToTask?: Record<string, string> }>(gtStatePath);
   const googleTasksTracked = gtState?.loopToTask
     ? Object.keys(gtState.loopToTask).length
     : 0;
+  let googleTasksSyncAgeMs: number | undefined;
+  try {
+    googleTasksSyncAgeMs = Math.max(0, now - statSync(gtStatePath).mtimeMs);
+  } catch {
+    googleTasksSyncAgeMs = undefined;
+  }
+  // The reconciler runs every 15 minutes; 2h means eight cycles produced no
+  // successful reconcile, which is a real problem rather than a blip.
+  const googleTasksStale =
+    googleTasksSyncAgeMs === undefined || googleTasksSyncAgeMs > 2 * 3600_000;
 
   // Today's activity
   const today = new Date(now);
@@ -195,7 +231,7 @@ export function buildHealthSummaryParts(input: HealthSummaryInput): HealthSummar
         0,
       ),
     },
-    loops: { openCount, googleTasksTracked },
+    loops: { openCount, googleTasksTracked, googleTasksSyncAgeMs, googleTasksStale },
     schedulerHighlights: {
       disabled: activeDisabled,
       failingNow,
@@ -229,7 +265,7 @@ export function formatHealthSummary(parts: HealthSummaryParts, now: number = Dat
   // Loops
   lines.push(
     `🔄 ${parts.loops.openCount} open loop${parts.loops.openCount === 1 ? "" : "s"}` +
-      ` · ${parts.loops.googleTasksTracked} mirrored to Google Tasks`,
+      ` · ${parts.loops.googleTasksTracked} mirrored to Google Tasks${parts.loops.googleTasksStale ? " ⚠️ STALE" : ""}`,
   );
 
   // Today activity
@@ -311,7 +347,11 @@ export function formatHealthDetail(parts: HealthSummaryParts, now: number = Date
   // Loops
   lines.push("*Loops*");
   lines.push(`  open: ${parts.loops.openCount}`);
-  lines.push(`  mirrored to Google Tasks: ${parts.loops.googleTasksTracked}`);
+  // The COUNT alone is read off local disk and stays cheerful forever after the
+  // API stops answering, so always render the mirror's age beside it.
+  lines.push(
+    `  mirrored to Google Tasks: ${parts.loops.googleTasksTracked}${formatMirrorAge(parts.loops)}`,
+  );
   lines.push("");
 
   // Today

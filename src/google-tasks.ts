@@ -23,7 +23,21 @@ export interface GoogleTask {
 
 interface GoogleTasksListResponse {
   items?: GoogleTask[];
+  nextPageToken?: string;
 }
+
+/**
+ * Injectable gws invoker. Production uses the real execFile; tests substitute
+ * a fake so pagination can be exercised without shelling out.
+ */
+export type GwsExec = (args: string[], gws: string, timeoutMs: number) => Promise<string>;
+
+/**
+ * Hard ceiling on pages walked per listTasks call (100 tasks/page → 5000).
+ * Hitting it means we cannot prove we saw the whole list, which is reported
+ * as ok:false rather than as a short list — see the note on MAX_PAGES use.
+ */
+const MAX_PAGES = 50;
 
 /**
  * Discriminated result for listTasks. Distinguishes "API call succeeded
@@ -69,32 +83,77 @@ async function gwsCall(args: string[], gws: string, timeoutMs: number): Promise<
  * from "API failure." Anything that goes wrong (auth, network, parse, gws
  * binary missing) becomes ok:false with the error message — the reconciler
  * uses this to bail without mutating state.
+ *
+ * PAGINATES. The Tasks API caps a page at 100 items and hands back a
+ * nextPageToken; ignoring it used to silently return the first 100 of Mark's
+ * 255-task Priority Bucket as ok:true. reconcileTasks reads "tracked task not
+ * in the list" as "Mark deleted it" and DROPS the loop with a permanent
+ * tombstone, so a truncated list is a data-loss bug, not a display bug — five
+ * real loops died that way on 2026-07-07, five days after loops moved from the
+ * small dedicated list into the main bucket.
+ *
+ * Any doubt about completeness (a page failing, an unparseable page, a
+ * repeated token, or blowing MAX_PAGES) returns ok:false. Skipping a cycle is
+ * always cheaper than dropping live commitments.
  */
 export async function listTasks(
   listId: string = MAXOS_LOOPS_LIST_ID,
   gws = "gws-personal",
   timeoutMs = 10_000,
+  exec: GwsExec = gwsCall,
 ): Promise<ListTasksResult> {
-  const params = JSON.stringify({
-    tasklist: listId,
-    showCompleted: true,
-    showHidden: true,
-    maxResults: 100,
-  });
-  try {
-    const stdout = await gwsCall(
-      ["tasks", "tasks", "list", "--params", params, "--format", "json"],
-      gws,
-      timeoutMs,
-    );
-    const trimmed = stripGwsHeaderNoise(stdout);
-    if (!trimmed) {
-      return { ok: false, error: "empty stdout (no JSON found)" };
+  const tasks: GoogleTask[] = [];
+  const seenTokens = new Set<string>();
+  let pageToken: string | undefined;
+
+  for (let pageNum = 1; ; pageNum++) {
+    if (pageNum > MAX_PAGES) {
+      return {
+        ok: false,
+        error: `pagination exceeded ${MAX_PAGES} pages — refusing to treat a truncated list as complete`,
+      };
     }
-    const parsed = JSON.parse(trimmed) as GoogleTasksListResponse;
-    return { ok: true, tasks: Array.isArray(parsed.items) ? parsed.items : [] };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+
+    const params: Record<string, unknown> = {
+      tasklist: listId,
+      showCompleted: true,
+      showHidden: true,
+      maxResults: 100,
+    };
+    if (pageToken) params.pageToken = pageToken;
+
+    let parsed: GoogleTasksListResponse;
+    try {
+      const stdout = await exec(
+        ["tasks", "tasks", "list", "--params", JSON.stringify(params), "--format", "json"],
+        gws,
+        timeoutMs,
+      );
+      const trimmed = stripGwsHeaderNoise(stdout);
+      if (!trimmed) {
+        return { ok: false, error: `empty stdout (no JSON found) on page ${pageNum}` };
+      }
+      parsed = JSON.parse(trimmed) as GoogleTasksListResponse;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: pageNum === 1 ? msg : `page ${pageNum} failed: ${msg}` };
+    }
+
+    if (Array.isArray(parsed.items)) tasks.push(...parsed.items);
+
+    const next = parsed.nextPageToken;
+    if (!next) return { ok: true, tasks };
+
+    // A token we have already followed means the API is looping us. Without
+    // this guard the loop would spin until MAX_PAGES burning API quota.
+    if (seenTokens.has(next)) {
+      return {
+        ok: false,
+        error: `pagination stalled — API repeated pageToken after page ${pageNum}`,
+      };
+    }
+    seenTokens.add(next);
+    pageToken = next;
   }
 }
 
@@ -102,8 +161,11 @@ export async function listTasks(
  * Create a task tied to an open-loop. Notes carry the canonical [loop:ID]
  * marker so the reconciler can map the task back to the loop on every run.
  *
- * Returns the created task id, or null on failure (logged but not thrown —
- * scheduler-side reconciliation must be tolerant of transient API errors).
+ * Returns the created task id, or null on failure. Reconciliation must be
+ * tolerant of transient API errors, so failures do not throw — but they are
+ * no longer silent: every failure path calls onError (default: stderr). The
+ * old bare `catch {}` meant a run could report "creates=2" having created
+ * nothing at all, with no trace anywhere.
  */
 export async function createTaskForLoop(
   loopId: string,
@@ -114,18 +176,24 @@ export async function createTaskForLoop(
     due?: string;
     gws?: string;
     timeoutMs?: number;
+    exec?: GwsExec;
+    onError?: (message: string) => void;
   } = {},
 ): Promise<string | null> {
   const listId = options.listId ?? MAXOS_LOOPS_LIST_ID;
   const gws = options.gws ?? "gws-personal";
   const timeoutMs = options.timeoutMs ?? 10_000;
+  const exec = options.exec ?? gwsCall;
+  const onError =
+    options.onError ??
+    ((message: string) => console.error(`google-tasks: create failed — ${message}`));
 
   const notes = notesWithLoopMarker(loopId, options.notes ?? "");
   const body: Record<string, unknown> = { title, notes };
   if (options.due) body.due = options.due;
 
   try {
-    const stdout = await gwsCall(
+    const stdout = await exec(
       [
         "tasks", "tasks", "insert",
         "--params", JSON.stringify({ tasklist: listId }),
@@ -136,10 +204,18 @@ export async function createTaskForLoop(
       timeoutMs,
     );
     const trimmed = stripGwsHeaderNoise(stdout);
-    if (!trimmed) return null;
+    if (!trimmed) {
+      onError(`loop ${loopId}: empty stdout (no JSON found)`);
+      return null;
+    }
     const parsed = JSON.parse(trimmed) as GoogleTask;
-    return parsed.id ?? null;
-  } catch {
+    if (!parsed.id) {
+      onError(`loop ${loopId}: response carried no task id`);
+      return null;
+    }
+    return parsed.id;
+  } catch (err) {
+    onError(`loop ${loopId}: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }

@@ -203,6 +203,68 @@ export function formatDropLine(now: Date, title: string, loopId?: string): strin
 }
 
 /**
+ * Outcome of one reconciler run.
+ *
+ * `creates` counts tasks the API actually created — NOT the number we meant to
+ * create. Reporting the intent was how "creates=2" came to mean "two API calls
+ * that both silently returned null." `createFailures` carries the difference so
+ * the run can exit non-zero.
+ */
+export interface ReconcilerRunResult {
+  closures: number;
+  drops: number;
+  /** Tasks the API confirmed it created. */
+  creates: number;
+  /** Creations that were attempted and failed. */
+  createFailures?: number;
+  /**
+   * Set when the run bailed out without mutating anything. Carries the RAW
+   * cause; which stage failed is reported separately in skippedStage so
+   * callers can compose their own message without string-parsing this one.
+   */
+  skippedReason?: string;
+  /** Which stage bailed, for log composition. */
+  skippedStage?: "state" | "listTasks";
+}
+
+/**
+ * Process exit code for a run. A skipped run or a failed creation must NOT
+ * exit 0: the cron ticker judges a job purely by its exit status, so exiting 0
+ * on failure made every real outage — the 2026-08-05→07 DNS and auth failures
+ * among them — indistinguishable from success to every monitor watching.
+ */
+export function exitCodeForResult(result: ReconcilerRunResult): number {
+  if (result.skippedReason) return 1;
+  if ((result.createFailures ?? 0) > 0) return 1;
+  return 0;
+}
+
+/**
+ * One-line, ISO-stamped run summary. Emitted unconditionally: the old code
+ * printed nothing unless work happened, which made log silence mean either
+ * "healthy and idle" or "dead" with no way to tell them apart. A timestamp on
+ * every line also makes failure windows recoverable after the fact.
+ */
+export function formatRunSummary(result: ReconcilerRunResult, now: Date = new Date()): string {
+  const stamp = now.toISOString().replace(/\.\d{3}Z$/, "Z");
+  if (result.skippedReason) {
+    const stage =
+      result.skippedStage === "listTasks"
+        ? "listTasks failed: "
+        : result.skippedStage === "state"
+          ? "state load failed: "
+          : "";
+    return `${stamp} google-tasks-reconciler: skipped — ${stage}${result.skippedReason}`;
+  }
+  const failures = result.createFailures ?? 0;
+  const tail = failures > 0 ? `, createFailures=${failures}` : "";
+  return (
+    `${stamp} google-tasks-reconciler: closures=${result.closures}, ` +
+    `drops=${result.drops}, creates=${result.creates}${tail}`
+  );
+}
+
+/**
  * Apply reconciler decisions: write closures, write drops, create new tasks,
  * update the open-loops file, persist state. Has side effects; orchestrated
  * separately so unit tests can hit reconcileTasks() in isolation.
@@ -215,7 +277,7 @@ export async function runGoogleTasksReconciler(
     listId?: string;
     deps?: RunReconcilerDeps;
   } = {},
-): Promise<{ closures: number; drops: number; creates: number; skippedReason?: string }> {
+): Promise<ReconcilerRunResult> {
   const maxosHome = options.maxosHome ?? process.env.MAXOS_HOME ?? `${process.env.HOME}/.hermes`;
   const now = options.now ?? new Date();
   const gws = options.gws ?? "gws-personal";
@@ -229,9 +291,18 @@ export async function runGoogleTasksReconciler(
   // Audit P1-1: bail out without mutating state when state.json is corrupt.
   // Otherwise reconcileTasks treats every tracked loop as "missing" → mass
   // DROP. Same failure mode as the listTasks-fail bail-out below.
+  // The skip reason travels in the result rather than being logged here, so
+  // the CLI emits exactly ONE timestamped line per run instead of an unstamped
+  // line plus a stamped summary.
   if (!stateResult.ok) {
-    console.error(`google-tasks-reconciler: skipped — ${stateResult.error}`);
-    return { closures: 0, drops: 0, creates: 0, skippedReason: stateResult.error };
+    return {
+      closures: 0,
+      drops: 0,
+      creates: 0,
+      createFailures: 0,
+      skippedReason: stateResult.error,
+      skippedStage: "state",
+    };
   }
   const state = stateResult.state;
 
@@ -242,8 +313,14 @@ export async function runGoogleTasksReconciler(
   // format change would mass-drop every tracked loop because reconcileTasks
   // can't tell "list is empty" from "list lookup failed".
   if (!tasksResult.ok) {
-    console.error(`google-tasks-reconciler: skipped — listTasks failed: ${tasksResult.error}`);
-    return { closures: 0, drops: 0, creates: 0, skippedReason: tasksResult.error };
+    return {
+      closures: 0,
+      drops: 0,
+      creates: 0,
+      createFailures: 0,
+      skippedReason: tasksResult.error,
+      skippedStage: "listTasks",
+    };
   }
   const tasks = tasksResult.tasks;
 
@@ -288,8 +365,13 @@ export async function runGoogleTasksReconciler(
     saveOpenLoops(maxosHome, remaining);
   }
 
-  // Creates → call API, add successful ids to state
+  // Creates → call API, add successful ids to state. Count what the API
+  // actually did: a null return is a failure, and reporting it as a create
+  // (which the old `creates: decision.creates.length` did) hid every
+  // creation outage behind a healthy-looking number.
   const updatedState: ReconcilerState = { loopToTask: { ...decision.newState.loopToTask } };
+  let created = 0;
+  let createFailures = 0;
   for (const loop of decision.creates) {
     const title = formatTaskTitle(loop);
     const taskNotes = formatTaskNotes(loop);
@@ -300,6 +382,14 @@ export async function runGoogleTasksReconciler(
     });
     if (taskId) {
       updatedState.loopToTask[loop.id] = taskId;
+      created++;
+    } else {
+      // Deliberately not recorded in state — the loop stays untracked so the
+      // next cycle retries it rather than treating it as mirrored.
+      createFailures++;
+      console.error(
+        `google-tasks-reconciler: create FAILED for loop ${loop.id} — will retry next cycle`,
+      );
     }
   }
 
@@ -308,7 +398,8 @@ export async function runGoogleTasksReconciler(
   return {
     closures: decision.closures.length,
     drops: decision.drops.length,
-    creates: decision.creates.length,
+    creates: created,
+    createFailures,
   };
 }
 
@@ -332,16 +423,25 @@ export function formatTaskNotes(loop: OpenLoop): string {
 }
 
 // CLI entry — `node dist/src/google-tasks-reconciler.js` (cron)
+//
+// Writes exactly one stamped summary line per run and exits non-zero on any
+// failure, so the cron ticker's exit status and the log's freshness both mean
+// what a reader assumes they mean.
 const isCLI = process.argv[1]?.endsWith("google-tasks-reconciler.js");
 if (isCLI) {
   runGoogleTasksReconciler().then((r) => {
-    if (process.env.MAXOS_GTASKS_VERBOSE || r.closures + r.drops + r.creates > 0) {
-      console.log(
-        `google-tasks-reconciler: closures=${r.closures}, drops=${r.drops}, creates=${r.creates}`,
-      );
+    const summary = formatRunSummary(r);
+    if (r.skippedReason || (r.createFailures ?? 0) > 0) {
+      console.error(summary);
+    } else {
+      console.log(summary);
     }
+    process.exitCode = exitCodeForResult(r);
   }).catch((err) => {
-    console.error("google-tasks-reconciler failed:", err instanceof Error ? err.message : err);
+    const stamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+    console.error(
+      `${stamp} google-tasks-reconciler failed: ${err instanceof Error ? err.message : err}`,
+    );
     process.exit(1);
   });
 }

@@ -5,6 +5,9 @@ import { promisify } from "node:util";
 import { request } from "node:http";
 import { request as requestHttps } from "node:https";
 import { smokeOpenRouter } from "./openrouter-smoke.js";
+import { readSchedulerLastRun } from "./scheduler-state.js";
+
+export { readSchedulerLastRun };
 
 const execFileAsync = promisify(execFile);
 
@@ -429,22 +432,27 @@ async function checkWorkspaceGit(maxosHome: string): Promise<CheckResult> {
   }
 }
 
-async function checkRecentTaskActivity(maxosHome: string): Promise<CheckResult> {
+export async function checkRecentTaskActivity(maxosHome: string): Promise<CheckResult> {
   const start = Date.now();
-  const path = join(maxosHome, "state.json");
-  if (!existsSync(path)) {
-    return { name: "recent-task-activity", status: "WARN", detail: "no state.json", durationMs: ms(start) };
-  }
   try {
-    const raw = JSON.parse(readFileSync(path, "utf-8"));
-    const lastRun: Record<string, number> = raw.scheduler?.lastRun ?? {};
+    const lastRun = readSchedulerLastRun(maxosHome);
+    if (Object.keys(lastRun).length === 0) {
+      return {
+        name: "recent-task-activity",
+        status: "WARN",
+        detail: "no scheduler state found (neither state.json nor cron/maxos-cron-state.json)",
+        durationMs: ms(start),
+      };
+    }
     const now = Date.now();
     const recent = Object.entries(lastRun).filter(([, ts]) => now - ts < 6 * 3600_000).length;
     if (recent === 0) {
+      const newest = Math.max(...Object.values(lastRun));
+      const ageH = Math.round((now - newest) / 3600_000);
       return {
         name: "recent-task-activity",
         status: "FAIL",
-        detail: "NO scheduled tasks have fired in the last 6 hours — scheduler may be hung",
+        detail: `NO scheduled tasks have fired in the last 6 hours (newest run ${ageH}h ago) — scheduler may be hung`,
         durationMs: ms(start),
       };
     }
