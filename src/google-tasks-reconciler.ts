@@ -120,6 +120,12 @@ export interface ReconcileTasksDecision {
   drops: { loopId: string; title: string }[];
   /** Loops that should have a Google Task created (none exists yet). */
   creates: OpenLoop[];
+  /**
+   * Loops that would have been created but whose action is not Mark's.
+   * Reported, never silent — a bucket that quietly drops things is the same
+   * trust problem as one that quietly fills up.
+   */
+  skippedNotMarks: OpenLoop[];
   /** New state after applying these decisions. */
   newState: ReconcilerState;
 }
@@ -144,13 +150,54 @@ export function reconcileTasks(input: ReconcileTasksInput): ReconcileTasksDecisi
   const closures: ReconcileTasksDecision["closures"] = [];
   const drops: ReconcileTasksDecision["drops"] = [];
   const creates: OpenLoop[] = [];
+  const skippedNotMarks: OpenLoop[] = [];
   const newLoopToTask: Record<string, string> = {};
 
-  // Index Google tasks by loopId from notes marker (the only ones we manage)
+  // The ownership gate. Every path that would mirror a loop into Mark's
+  // Priority Bucket goes through here, so there is exactly one place to read.
+  const wantCreate = (loop: OpenLoop): void => {
+    if (ownsAction(loop)) creates.push(loop);
+    else skippedNotMarks.push(loop);
+  };
+
+  // Index Google tasks by loopId from notes marker (the only ones we manage).
+  //
+  // ⛔ 2026-08-17. This used to be a bare `set()`, so LAST WRITE WON and a loop
+  // could only ever be represented by ONE task. Mark ended up with five tasks
+  // for cathy-benson-kcr-website and a new one every 15 minutes:
+  //   "You're doing multiple google tasks for the same thing- why?"
+  // Three completed leftovers and two live tasks shared that id, and the winner
+  // was a COMPLETED one from four days earlier. Its id did not match the tracked
+  // id, so it fell to the "leftover from an earlier incarnation" branch below and
+  // mirrored the loop afresh — forever, because each task it created was not the
+  // winner on the next pass either. The pagination fix is what exposed it: stale
+  // completed tasks used to drift past the un-paginated first 100 and disappear.
+  //
+  // Priority, strongest first. Ties break on most-recently-updated so the choice
+  // is deterministic rather than dependent on the API's ordering:
+  //   1. the task we are TRACKING for this loop — its completion is the only
+  //      thing allowed to close the loop
+  //   2. any OPEN task — a live commitment already on Mark's list, so there is
+  //      nothing to create
+  //   3. a completed leftover — only now does "mirror afresh" mean anything
+  const rank = (t: GoogleTask, loopId: string): number => {
+    if (state.loopToTask[loopId] === t.id) return 3;
+    return t.status === "completed" ? 1 : 2;
+  };
   const tasksByLoopId = new Map<string, GoogleTask>();
   for (const t of tasks) {
     const lid = extractLoopId(t.notes);
-    if (lid) tasksByLoopId.set(lid, t);
+    if (!lid) continue;
+    const held = tasksByLoopId.get(lid);
+    if (!held) {
+      tasksByLoopId.set(lid, t);
+      continue;
+    }
+    const a = rank(t, lid);
+    const b = rank(held, lid);
+    if (a > b || (a === b && (t.updated ?? "") > (held.updated ?? ""))) {
+      tasksByLoopId.set(lid, t);
+    }
   }
 
   const loopById = new Map<string, OpenLoop>();
@@ -186,7 +233,7 @@ export function reconcileTasks(input: ReconcileTasksInput): ReconcileTasksDecisi
       }
       // A leftover from an earlier incarnation of this id: ignore it and mirror
       // the loop afresh.
-      creates.push(loop);
+      wantCreate(loop);
       continue;
     }
 
@@ -196,11 +243,17 @@ export function reconcileTasks(input: ReconcileTasksInput): ReconcileTasksDecisi
       continue;
     }
 
-    // No task exists → create one
-    creates.push(loop);
+    // No task exists → create one, if the verb is Mark's
+    wantCreate(loop);
   }
 
-  return { closures, drops, creates, newState: { loopToTask: newLoopToTask } };
+  return {
+    closures,
+    drops,
+    creates,
+    skippedNotMarks,
+    newState: { loopToTask: newLoopToTask },
+  };
 }
 
 /** Format a closure log line for a Google-Tasks-driven completion. */
@@ -235,6 +288,13 @@ export interface ReconcilerRunResult {
   creates: number;
   /** Creations that were attempted and failed. */
   createFailures?: number;
+  /**
+   * Loops withheld because the action is not Mark's (ownsAction() false).
+   * NOT a failure — this is the gate working — so it never affects the exit
+   * code. It is surfaced so a bucket that stays empty is legible rather than
+   * mysterious.
+   */
+  skippedNotMarks?: number;
   /**
    * Set when the run bailed out without mutating anything. Carries the RAW
    * cause; which stage failed is reported separately in skippedStage so
@@ -275,7 +335,10 @@ export function formatRunSummary(result: ReconcilerRunResult, now: Date = new Da
     return `${stamp} google-tasks-reconciler: skipped — ${stage}${result.skippedReason}`;
   }
   const failures = result.createFailures ?? 0;
-  const tail = failures > 0 ? `, createFailures=${failures}` : "";
+  const notMarks = result.skippedNotMarks ?? 0;
+  const tail =
+    (failures > 0 ? `, createFailures=${failures}` : "") +
+    (notMarks > 0 ? `, notMarks=${notMarks}` : "");
   return (
     `${stamp} google-tasks-reconciler: closures=${result.closures}, ` +
     `drops=${result.drops}, creates=${result.creates}${tail}`
@@ -387,16 +450,30 @@ export async function runGoogleTasksReconciler(
   // actually did: a null return is a failure, and reporting it as a create
   // (which the old `creates: decision.creates.length` did) hid every
   // creation outage behind a healthy-looking number.
+  // Withheld loops are named in the log, one line each. "No silent caps": a
+  // Priority Bucket that stays empty because everything was someone else's job
+  // must be readable as that, not as an outage.
+  for (const loop of decision.skippedNotMarks) {
+    console.error(
+      `google-tasks-reconciler: no task for loop ${loop.id} — action is not Mark's ` +
+        `(owner=${loop.owner ? JSON.stringify(loop.owner) : "unset"}); tracked in open-loops only`,
+    );
+  }
+
   const updatedState: ReconcilerState = { loopToTask: { ...decision.newState.loopToTask } };
   let created = 0;
   let createFailures = 0;
   for (const loop of decision.creates) {
     const title = formatTaskTitle(loop);
     const taskNotes = formatTaskNotes(loop);
+    // ymdLocal, never now.toISOString() — see the UTC warning on formatTaskDue.
+    const due = formatTaskDue(loop, ymdLocal(now));
     const taskId = await createFn(loop.id, title, {
       listId,
       notes: taskNotes,
       gws,
+      // Empty string = no usable date; omit rather than send a bad value.
+      ...(due ? { due } : {}),
     });
     if (taskId) {
       updatedState.loopToTask[loop.id] = taskId;
@@ -418,21 +495,85 @@ export async function runGoogleTasksReconciler(
     drops: decision.drops.length,
     creates: created,
     createFailures,
+    skippedNotMarks: decision.skippedNotMarks.length,
   };
 }
 
 /**
- * Build the human-facing task title. Mark sees this in his Google Tasks
- * app — keep it scannable, mention the person if known.
+ * Build the human-facing task title. Mark sees this in his Google Tasks app —
+ * keep it scannable.
+ *
+ * ⛔ 2026-08-18: this used to return `${loop.person}: ${loop.topic}`, and a
+ * "Name:" prefix reads as an assignee in the Tasks UI. It produced
+ * "Haley: Check current Colombia sponsorship pool ... with Haley", which is a
+ * title confessing it is not Mark's job — if Haley owned it she would not be
+ * checking with herself. `person` is the COUNTERPARTY and always was. It now
+ * lives in the notes, where it cannot be misread as ownership.
+ * See workspace/.claude/rules/google-tasks-are-marks-only.md.
  */
 export function formatTaskTitle(loop: OpenLoop): string {
-  if (loop.person) return `${loop.person}: ${loop.topic}`;
   return loop.topic;
+}
+
+/**
+ * Does the action in this loop belong to MARK?
+ *
+ * The gate on task creation, and it FAILS CLOSED. Only an explicit
+ * owner of "mark" opens it. Absent, empty, or anyone else's name → no task;
+ * the loop is still tracked in open-loops.json and still scanned, it just
+ * never lands in the Priority Bucket.
+ *
+ * Mark: "My google tasks needs to be a FOCUSED bucket on only the things that
+ * I MUST get done." A bucket he cannot trust costs him the whole bucket, so
+ * the cost of a miss (he says "that one's mine" — five words) is far below the
+ * cost of a false create (he stops believing the list).
+ *
+ * ⛔ Never infer ownership from `person`, from the topic wording, or from how
+ * important the item looks. Importance is not ownership.
+ */
+export function ownsAction(loop: OpenLoop): boolean {
+  const owner = (loop.owner ?? "").trim().toLowerCase();
+  return owner === "mark" || owner === "mark mcnair";
+}
+
+/**
+ * Build the RFC3339 `due` value for a loop's Google Task.
+ *
+ * Mark, 2026-08-12: every mirrored loop landed under "No date" in his Priority
+ * Bucket, which sorts to the very bottom — "these were all lost for me without
+ * scrolling all the way down." A date is the only thing that lifts them.
+ *
+ * Due = firstSeen, not today. Google Tasks pins overdue items to the TOP, so
+ * dating a loop by its age means the oldest loop is the most overdue and
+ * therefore the highest on the list. That is the correct priority order and it
+ * falls out for free. It is also idempotent: the value never depends on when
+ * the reconciler happened to run.
+ *
+ * ⚠️ Google treats `due` as DATE-ONLY and reads it in UTC, discarding the time.
+ * The string must be built from a calendar date and pinned to T00:00:00.000Z.
+ * Never derive it from `new Date().toISOString()` — past ~6pm Central that
+ * rolls to tomorrow's UTC date and the task shows up a day late.
+ */
+export function formatTaskDue(loop: OpenLoop, today: string): string {
+  const isCalendarDate = (s: unknown): s is string =>
+    typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s.slice(0, 10)) && !Number.isNaN(Date.parse(s.slice(0, 10)));
+  const date = isCalendarDate(loop.firstSeen)
+    ? loop.firstSeen.slice(0, 10)
+    : isCalendarDate(today)
+      ? today.slice(0, 10)
+      : undefined;
+  // No sane date anywhere → undefined, and the caller omits `due` entirely.
+  // An invalid due string makes the whole insert fail, which would be worse
+  // than the undated task this fix exists to replace.
+  return date ? `${date}T00:00:00.000Z` : "";
 }
 
 export function formatTaskNotes(loop: OpenLoop): string {
   const lines: string[] = [];
   if (loop.notes) lines.push(loop.notes);
+  // The counterparty lives here now, not in the title. "With: Haley" cannot be
+  // misread as "assigned to Haley" the way a "Haley:" title prefix was.
+  if (loop.person) lines.push(`With: ${loop.person}`);
   lines.push(`First seen: ${loop.firstSeen}`);
   lines.push(``);
   lines.push(`Created by MaxOS. Delete this task to tell MaxOS the loop wasn't real.`);

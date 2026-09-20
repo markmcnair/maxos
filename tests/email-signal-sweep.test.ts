@@ -362,6 +362,43 @@ describe("sweepOnce", () => {
     assert.equal(r.emitted.length, 1);
     assert.equal(r.emitted[0].type, "moved_to_inbox");
   });
+
+  it("skips the empty-inbox placeholder (message_id 'NONE') — no API call, no error", async () => {
+    writeDailyLog([
+      {
+        account: "emprise",
+        message_id: "NONE",
+        from: "N/A",
+        subject: "No unread emails",
+        assigned_bucket: "none",
+        assigned_label_id: "",
+        secondary_labels: [],
+        draft_created: false,
+        notes: "",
+      },
+      {
+        account: "emprise",
+        message_id: "m2",
+        from: "b@x.com",
+        subject: "s2",
+        assigned_bucket: "delete",
+        assigned_label_id: "Label_7959061764173529209",
+        secondary_labels: [],
+        draft_created: false,
+        notes: "",
+      },
+    ]);
+    const seen: string[] = [];
+    const fetcher = async (_a: string, mid: string): Promise<GmailMetadata> => {
+      seen.push(mid);
+      if (mid === "NONE") throw new Error("Invalid id value"); // must never be reached
+      return { id: "m2", labelIds: ["INBOX", "UNREAD"] };
+    };
+    const r = await sweepOnce(home, new Date("2026-05-05T22:00:00Z"), fetcher);
+    assert.ok(!seen.includes("NONE"), "fetcher must NOT be called for the NONE placeholder");
+    assert.equal(r.errors.length, 0);
+    assert.equal(r.emitted.length, 1);
+  });
 });
 
 // ───── stale see-mail detection ─────

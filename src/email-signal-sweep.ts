@@ -353,6 +353,14 @@ export async function sweepOnce(
   const errors: SweepResult["errors"] = [];
 
   for (const entry of entries) {
+    // Skip placeholder / unresolved rows. When an inbox is empty the triage
+    // writes a sentinel entry (subject "No unread emails", message_id "NONE").
+    // Fetching that from Gmail errors "Invalid id value" every run and spams
+    // the health monitor. See cron-email-signal-sweep.log (2026-07-07).
+    const mid = String(entry.message_id ?? "").trim();
+    if (!mid || mid.toUpperCase() === "NONE" || mid === "null" || mid === "undefined") {
+      continue;
+    }
     let meta: GmailMetadata;
     try {
       meta = await fetcher(entry.account, entry.message_id);

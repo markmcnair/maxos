@@ -8,17 +8,25 @@ import {
   runGoogleTasksReconciler,
   formatTaskTitle,
   formatTaskNotes,
+  formatTaskDue,
   formatClosureLine,
   formatDropLine,
+  ownsAction,
+  exitCodeForResult,
+  formatRunSummary,
 } from "../src/google-tasks-reconciler.js";
 import type { OpenLoop } from "../src/loop-reconciler.js";
 import type { GoogleTask, ListTasksResult } from "../src/google-tasks.js";
 
+// owner defaults to "mark" so the state-machine tests below keep testing the
+// state machine. The ownership GATE has its own describe block at the bottom —
+// that is where owner-absent and owner-someone-else are pinned down.
 const baseLoop = (overrides: Partial<OpenLoop>): OpenLoop => ({
   id: "test-loop",
   topic: "Test loop topic",
   firstSeen: "2026-04-22",
   lastUpdated: "2026-04-24",
+  owner: "mark",
   ...overrides,
 });
 
@@ -151,14 +159,21 @@ describe("reconcileTasks (pure)", () => {
 });
 
 describe("formatters", () => {
-  it("formatTaskTitle uses person prefix when known", () => {
+  // BURN (Mark, 2026-08-18). formatTaskTitle used to return `${person}: ${topic}`
+  // and produced "Haley: Check current Colombia sponsorship pool ... with Haley".
+  // A "Name:" prefix reads as an assignee in the Tasks UI. Never again.
+  it("formatTaskTitle NEVER prefixes the person — that reads as an assignee", () => {
     const loop = baseLoop({ topic: "ship invoice", person: "Alice" });
-    assert.equal(formatTaskTitle(loop), "Alice: ship invoice");
+    assert.equal(formatTaskTitle(loop), "ship invoice");
+    assert.doesNotMatch(formatTaskTitle(loop), /^Alice:/);
   });
 
-  it("formatTaskTitle falls back to topic alone", () => {
-    const loop = baseLoop({ topic: "send paperwork" });
-    assert.equal(formatTaskTitle(loop), "send paperwork");
+  it("formatTaskTitle is the topic, with or without a person", () => {
+    assert.equal(formatTaskTitle(baseLoop({ topic: "send paperwork" })), "send paperwork");
+    assert.equal(
+      formatTaskTitle(baseLoop({ topic: "send paperwork", person: "Glenn" })),
+      "send paperwork",
+    );
   });
 
   it("formatTaskNotes embeds the deletion-instruction line", () => {
@@ -166,6 +181,42 @@ describe("formatters", () => {
     const notes = formatTaskNotes(loop);
     assert.match(notes, /Delete this task to tell MaxOS the loop wasn't real/);
     assert.match(notes, /Mark complete when done/);
+  });
+
+  it("formatTaskNotes carries the counterparty, since the title no longer does", () => {
+    assert.match(formatTaskNotes(baseLoop({ person: "Haley" })), /(^|\n)With: Haley(\n|$)/);
+    assert.doesNotMatch(formatTaskNotes(baseLoop({})), /With:/);
+  });
+
+  // Mark 2026-08-12: undated tasks sink to the bottom of the Priority Bucket
+  // under "No date" and he never sees them. Due date is the whole fix.
+  it("formatTaskDue dates the task by firstSeen so older loops rank as more overdue", () => {
+    const loop = baseLoop({ firstSeen: "2026-04-22" });
+    assert.equal(formatTaskDue(loop, "2026-08-12"), "2026-04-22T00:00:00.000Z");
+  });
+
+  it("formatTaskDue pins midnight UTC — Google reads due as a date and drops the time", () => {
+    const due = formatTaskDue(baseLoop({ firstSeen: "2026-08-12" }), "2026-08-12");
+    assert.match(due, /^\d{4}-\d{2}-\d{2}T00:00:00\.000Z$/);
+    // The date in the string must survive UTC parsing unshifted.
+    assert.equal(new Date(due).toISOString().slice(0, 10), "2026-08-12");
+  });
+
+  it("formatTaskDue falls back to today when firstSeen is missing or junk", () => {
+    for (const bad of [undefined, "", "not-a-date", "2026-13-99"]) {
+      const loop = { ...baseLoop({}), firstSeen: bad as unknown as string };
+      assert.equal(formatTaskDue(loop, "2026-08-12"), "2026-08-12T00:00:00.000Z", `firstSeen=${bad}`);
+    }
+  });
+
+  it("formatTaskDue returns empty when no date is usable, so the caller omits due", () => {
+    const loop = { ...baseLoop({}), firstSeen: undefined as unknown as string };
+    assert.equal(formatTaskDue(loop, "garbage"), "");
+  });
+
+  it("formatTaskDue tolerates a full ISO timestamp in firstSeen", () => {
+    const loop = baseLoop({ firstSeen: "2026-04-22T18:03:00.000Z" });
+    assert.equal(formatTaskDue(loop, "2026-08-12"), "2026-04-22T00:00:00.000Z");
   });
 
   it("formatClosureLine produces a parseable closure entry", () => {
@@ -233,7 +284,7 @@ describe("runGoogleTasksReconciler (orchestrator with FS + mocked deps)", () => 
     // treatment on the next run = mass DROP for every loop. Same failure
     // mode as the listTasks-fail bug. Bail out instead.
     writeLoops([
-      { id: "x", topic: "X", firstSeen: "2026-04-22", lastUpdated: "2026-04-24" },
+      { id: "x", topic: "X", firstSeen: "2026-04-22", lastUpdated: "2026-04-24", owner: "mark" },
     ]);
     // Corrupt state file — valid JSON but wrong shape
     writeFileSync(statePath, '{"loopToTask": "not-an-object"}');
@@ -255,8 +306,8 @@ describe("runGoogleTasksReconciler (orchestrator with FS + mocked deps)", () => 
 
   it("BAILS without mutation when listTasks fails (regression for ISSUE-001)", async () => {
     writeLoops([
-      { id: "x", topic: "X", firstSeen: "2026-04-22", lastUpdated: "2026-04-24" },
-      { id: "y", topic: "Y", firstSeen: "2026-04-22", lastUpdated: "2026-04-24" },
+      { id: "x", topic: "X", firstSeen: "2026-04-22", lastUpdated: "2026-04-24", owner: "mark" },
+      { id: "y", topic: "Y", firstSeen: "2026-04-22", lastUpdated: "2026-04-24", owner: "mark" },
     ]);
     writeState({ loopToTask: { x: "tx", y: "ty" } });
 
@@ -283,7 +334,7 @@ describe("runGoogleTasksReconciler (orchestrator with FS + mocked deps)", () => 
 
   it("creates tasks for untracked loops, no closures or drops on a fresh slate", async () => {
     writeLoops([
-      { id: "x", topic: "X topic", firstSeen: "2026-04-22", lastUpdated: "2026-04-24" },
+      { id: "x", topic: "X topic", firstSeen: "2026-04-22", lastUpdated: "2026-04-24", owner: "mark" },
     ]);
     let createCalled = 0;
     const r = await runGoogleTasksReconciler({
@@ -304,9 +355,32 @@ describe("runGoogleTasksReconciler (orchestrator with FS + mocked deps)", () => 
     assert.equal(readState().loopToTask["x"], "task-for-x");
   });
 
+  // The regression Mark hit: every task was inserted with no `due`, so Google
+  // filed them all under "No date" at the bottom of the list.
+  it("passes a due date on every create so tasks never land under 'No date'", async () => {
+    writeLoops([
+      { id: "x", topic: "X topic", firstSeen: "2026-04-22", lastUpdated: "2026-04-24", owner: "mark" },
+      { id: "y", topic: "Y topic", firstSeen: "2026-08-01", lastUpdated: "2026-08-01", owner: "mark" },
+    ]);
+    const seen: Record<string, string | undefined> = {};
+    await runGoogleTasksReconciler({
+      maxosHome: tmp,
+      now: fixedNow,
+      deps: {
+        listTasks: async () => ({ ok: true, tasks: [] }),
+        createTaskForLoop: async (loopId, _title, options) => {
+          seen[loopId] = options.due;
+          return `task-for-${loopId}`;
+        },
+      },
+    });
+    assert.equal(seen["x"], "2026-04-22T00:00:00.000Z");
+    assert.equal(seen["y"], "2026-08-01T00:00:00.000Z");
+  });
+
   it("emits a CLOSURE and removes the loop when a tracked task is completed", async () => {
     writeLoops([
-      { id: "x", topic: "Send the invoice", firstSeen: "2026-04-22", lastUpdated: "2026-04-24" },
+      { id: "x", topic: "Send the invoice", firstSeen: "2026-04-22", lastUpdated: "2026-04-24", owner: "mark" },
     ]);
     writeState({ loopToTask: { x: "tx" } });
     const completedTask: GoogleTask = {
@@ -334,7 +408,7 @@ describe("runGoogleTasksReconciler (orchestrator with FS + mocked deps)", () => 
 
   it("emits a DECISION drop line when a tracked task disappears", async () => {
     writeLoops([
-      { id: "fake", topic: "Fake MNDA work", firstSeen: "2026-04-22", lastUpdated: "2026-04-24" },
+      { id: "fake", topic: "Fake MNDA work", firstSeen: "2026-04-22", lastUpdated: "2026-04-24", owner: "mark" },
     ]);
     writeState({ loopToTask: { fake: "t-was-here" } });
     const r = await runGoogleTasksReconciler({
@@ -392,7 +466,7 @@ describe("runGoogleTasksReconciler (orchestrator with FS + mocked deps)", () => 
 
   it("is idempotent — second run with same inputs is a no-op", async () => {
     writeLoops([
-      { id: "x", topic: "Active loop", firstSeen: "2026-04-22", lastUpdated: "2026-04-24" },
+      { id: "x", topic: "Active loop", firstSeen: "2026-04-22", lastUpdated: "2026-04-24", owner: "mark" },
     ]);
     writeState({ loopToTask: { x: "tx" } });
     const activeTask: GoogleTask = {
@@ -414,5 +488,167 @@ describe("runGoogleTasksReconciler (orchestrator with FS + mocked deps)", () => 
     assert.equal(r2.creates, 0);
     assert.equal(readState().loopToTask["x"], "tx");
     assert.equal(readClosures(), ""); // No spurious lines on second pass
+  });
+
+  // ⛔ BURN 2026-08-17. Mark: "You're doing multiple google tasks for the same
+  // thing- why?" The reconciler had created FIVE tasks for the loop
+  // cathy-benson-kcr-website and was adding one more every 15-minute pass.
+  //
+  // Cause: tasks are indexed into a Map keyed by loop id, so LAST WRITE WINS and
+  // one loop can only ever be represented by one task. With three completed
+  // leftovers and two live ones sharing the id, the winner was a COMPLETED task
+  // from four days earlier. Its id did not match the tracked id, so it took the
+  // "leftover from an earlier incarnation → mirror the loop afresh" branch and
+  // created another task. The task it created was ALSO not the Map winner next
+  // run, so it never converged.
+  //
+  // The pagination fix is what exposed this: stale completed tasks used to drift
+  // past the un-paginated first 100 and vanish. The source comment says so.
+  //
+  // An OPEN task for a loop must win the index over any completed one, and the
+  // TRACKED task must win over everything.
+  it("BURN never re-creates when an open task for the loop already exists", async () => {
+    writeLoops([
+      { id: "cathy", topic: "Send Cathy the KCR link", firstSeen: "2026-08-17", lastUpdated: "2026-08-17", owner: "mark" },
+    ]);
+    writeState({ loopToTask: { cathy: "open-new" } });
+    // Real shape of Mark's list: the stale COMPLETED leftover sorts LAST.
+    const tasks: GoogleTask[] = [
+      { id: "done-recent", title: "Send Cathy the KCR link", notes: "[loop:cathy]", status: "completed", updated: "2026-08-17T21:33:29Z" },
+      { id: "open-new", title: "Send Cathy the KCR link", notes: "[loop:cathy]", status: "needsAction", updated: "2026-08-17T23:22:04Z" },
+      { id: "open-older", title: "Send Cathy the KCR link", notes: "[loop:cathy]", status: "needsAction", updated: "2026-08-17T22:37:28Z" },
+      { id: "done-stale", title: "Send Cathy the KCR link", notes: "[loop:cathy]", status: "completed", updated: "2026-08-13T02:00:52Z" },
+    ];
+    let created = 0;
+    const deps = {
+      listTasks: async (): Promise<ListTasksResult> => ({ ok: true, tasks }),
+      createTaskForLoop: async () => { created++; return null; },
+    };
+    const r = await runGoogleTasksReconciler({ maxosHome: tmp, now: fixedNow, deps });
+    assert.equal(r.creates, 0, "a loop with a live open task must never be re-created");
+    assert.equal(created, 0, "no API create call");
+    assert.equal(r.closures, 0, "a stale completed leftover must not close the loop either");
+    assert.equal(readState().loopToTask["cathy"], "open-new", "tracked task is preserved");
+  });
+
+  // The tracked task completing IS the close signal, even when stale leftovers
+  // carrying the same id sort after it. Losing this would mean Mark ticks the
+  // box and the loop never closes.
+  it("BURN the tracked task completing still closes the loop", async () => {
+    writeLoops([
+      { id: "cathy", topic: "Send Cathy the KCR link", firstSeen: "2026-08-17", lastUpdated: "2026-08-17", owner: "mark" },
+    ]);
+    writeState({ loopToTask: { cathy: "tracked" } });
+    const tasks: GoogleTask[] = [
+      { id: "tracked", title: "Send Cathy the KCR link", notes: "[loop:cathy]", status: "completed", updated: "2026-08-17T23:52:13Z" },
+      { id: "done-stale", title: "Send Cathy the KCR link", notes: "[loop:cathy]", status: "completed", updated: "2026-08-13T02:00:52Z" },
+    ];
+    const deps = {
+      listTasks: async (): Promise<ListTasksResult> => ({ ok: true, tasks }),
+      createTaskForLoop: async () => null,
+    };
+    const r = await runGoogleTasksReconciler({ maxosHome: tmp, now: fixedNow, deps });
+    assert.equal(r.closures, 1, "completing the tracked task closes the loop");
+    assert.equal(r.creates, 0);
+  });
+});
+
+/**
+ * The ownership gate. Origin: Mark, 2026-08-18.
+ *
+ * A loop captured from the 2:30 Compassion meeting became the Google Task
+ * "Haley: Check current Colombia sponsorship pool/availability with Haley and
+ * report back to Josh Farmer and Joey Cook."
+ *
+ * Mark: "This obviously shouldn't be and is not my job... My google tasks needs
+ * to be a FOCUSED bucket on only the things that I MUST get done."
+ *
+ * Every case here is a BURN case. If one starts failing, fix the code.
+ */
+describe("ownsAction — only Mark's own verbs reach the Priority Bucket", () => {
+  const loop = (o: Partial<OpenLoop>): OpenLoop => ({
+    id: "l",
+    topic: "T",
+    firstSeen: "2026-08-18",
+    lastUpdated: "2026-08-18",
+    ...o,
+  });
+
+  it("owner 'mark' opens the gate", () => {
+    assert.equal(ownsAction(loop({ owner: "mark" })), true);
+    assert.equal(ownsAction(loop({ owner: "Mark" })), true);
+    assert.equal(ownsAction(loop({ owner: "  MARK  " })), true);
+    assert.equal(ownsAction(loop({ owner: "Mark McNair" })), true);
+  });
+
+  it("FAILS CLOSED with no owner — an unlabelled loop never becomes a task", () => {
+    assert.equal(ownsAction(loop({})), false);
+    assert.equal(ownsAction(loop({ owner: "" })), false);
+    assert.equal(ownsAction(loop({ owner: "   " })), false);
+  });
+
+  it("someone else's verb is never Mark's task", () => {
+    assert.equal(ownsAction(loop({ owner: "Haley" })), false);
+    assert.equal(ownsAction(loop({ owner: "Josh Farmer" })), false);
+  });
+
+  it("person is NOT owner — a counterparty named Mark does not open the gate", () => {
+    // "Send the MNDA to Mark's lawyer" is not automatically Mark's action, and
+    // more to the point: person has never meant owner. Reading it as one is the
+    // exact bug. Only the owner field decides.
+    assert.equal(ownsAction(loop({ person: "Mark" })), false);
+  });
+
+  it("BURN: the Haley/Colombia loop produces NO task", () => {
+    const haley = loop({
+      id: "colombia-sponsorship-pool",
+      topic: "Check current Colombia sponsorship pool/availability and report back to Josh and Joey",
+      person: "Haley",
+    });
+    const decision = reconcileTasks({ loops: [haley], tasks: [], state: { loopToTask: {} } });
+    assert.equal(decision.creates.length, 0, "Haley checks the pool, not Mark");
+    assert.equal(decision.skippedNotMarks.length, 1);
+    assert.equal(decision.skippedNotMarks[0].id, "colombia-sponsorship-pool");
+  });
+
+  it("BURN: Mark's own reach-out DOES produce a task", () => {
+    // The narrow exception: he said in the meeting that he would check in.
+    const reachOut = loop({
+      id: "check-in-haley-colombia",
+      topic: "Check in with Haley on the Colombia pool",
+      person: "Haley",
+      owner: "mark",
+    });
+    const decision = reconcileTasks({ loops: [reachOut], tasks: [], state: { loopToTask: {} } });
+    assert.equal(decision.creates.length, 1);
+    assert.equal(decision.skippedNotMarks.length, 0);
+    assert.equal(formatTaskTitle(decision.creates[0]), "Check in with Haley on the Colombia pool");
+  });
+
+  it("the gate also covers the stale-completed-leftover create path", () => {
+    // A leftover completed task normally makes the reconciler mirror the loop
+    // afresh. That path must be gated too, or it becomes a back door.
+    const notMine = loop({ id: "x", topic: "Josh confirms the Cambodia budget", owner: "Josh" });
+    const leftover = baseTask({ id: "old", loopId: "x", status: "completed" });
+    const decision = reconcileTasks({
+      loops: [notMine],
+      tasks: [leftover],
+      state: { loopToTask: {} },
+    });
+    assert.equal(decision.creates.length, 0);
+    assert.equal(decision.skippedNotMarks.length, 1);
+  });
+
+  it("a withheld loop is NOT dropped and NOT closed — it stays tracked in open-loops", () => {
+    const notMine = loop({ id: "x", owner: "Haley" });
+    const decision = reconcileTasks({ loops: [notMine], tasks: [], state: { loopToTask: {} } });
+    assert.equal(decision.drops.length, 0);
+    assert.equal(decision.closures.length, 0);
+  });
+
+  it("withholding is not a failure — exit code stays 0 and the summary says so", () => {
+    const r = { closures: 0, drops: 0, creates: 0, createFailures: 0, skippedNotMarks: 3 };
+    assert.equal(exitCodeForResult(r), 0);
+    assert.match(formatRunSummary(r, new Date("2026-08-18T12:00:00Z")), /notMarks=3/);
   });
 });

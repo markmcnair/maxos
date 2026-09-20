@@ -5,7 +5,7 @@ import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".maxos");
+const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".hermes");
 
 // Detect project root — works from both scripts/ (tsx) and dist/scripts/ (compiled)
 const PROJECT_ROOT = existsSync(join(__dirname, "..", "package.json"))

@@ -14,7 +14,9 @@ import { dirname, join } from "node:path";
  * fetch from gws + imessage-scan, dedup, and persistence.
  *
  * Storage: ~/.hermes/workspace/memory/commitments.jsonl + cancellations.jsonl
- * (both append-only, JSONL, deduped by recordKey).
+ * (both append-only, JSONL, deduped by recordKey). Plus
+ * outbound-replies.jsonl (reply_only records — separate store, see
+ * ReplyOnlyRecord invariant).
  */
 
 export type Channel = "email" | "imessage" | "chat";
@@ -60,7 +62,32 @@ export interface CancellationRecord {
   timeReference: string;
 }
 
+/**
+ * Lightweight record of an outbound message that did NOT match commitment or
+ * cancellation patterns but is still evidence Mark has already engaged with the
+ * recipient. The brief-gate uses this to auto-resolve "pending decisions" that
+ * Mark has actually answered off-record (e.g. "Oct works better for me" in a
+ * iMessage reply). Body is truncated to 240 chars to keep the jsonl small.
+ *
+ * INVARIANT (Tier 4 guardrail): this record type lives in its OWN file
+ * (outbound-replies.jsonl) and its dedup set is computed separately from
+ * commitments/cancellations. A messageId can appear in BOTH stores — a single
+ * outbound can carry both a commitment and be evidence that Mark replied.
+ * Do NOT merge the dedup sets.
+ */
+export interface ReplyOnlyRecord {
+  type: "reply_only";
+  ts: string;
+  messageId: string;
+  sender: string;
+  recipient: string;
+  channel: Channel;
+  /** First 240 chars of the body, single line. */
+  body: string;
+}
+
 export type Record_ = CommitmentRecord | CancellationRecord;
+export type AnyRecord = CommitmentRecord | CancellationRecord | ReplyOnlyRecord;
 
 // ───── Commitment extraction ─────
 
@@ -286,7 +313,7 @@ export function extractCancellations(msg: MessageInput): CancellationRecord[] {
 
 // ───── Storage ─────
 
-export function recordKey(r: Record_): string {
+export function recordKey(r: AnyRecord): string {
   return `${r.type}|${r.messageId}|${r.recipient}`;
 }
 
@@ -296,6 +323,15 @@ function commitmentsPath(home: string): string {
 
 function cancellationsPath(home: string): string {
   return join(home, "workspace", "memory", "cancellations.jsonl");
+}
+
+/**
+ * Path to the outbound-replies store. This is its OWN file (separate from
+ * commitments/cancellations) — see ReplyOnlyRecord invariant above. Exposed
+ * so the brief-gate Python can read the same path without drift.
+ */
+export function repliesPath(home: string): string {
+  return join(home, "workspace", "memory", "outbound-replies.jsonl");
 }
 
 function readJsonlSafely(path: string): unknown[] {
@@ -327,6 +363,24 @@ export function loadEmittedKeys(home: string): Set<string> {
   return out;
 }
 
+/**
+ * Load dedup keys for reply_only records ONLY. Separate from loadEmittedKeys
+ * so a single messageId can appear in both stores — the type prefix in the
+ * key (`reply_only|...` vs `commitment|...`) keeps them from colliding anyway,
+ * but the brief-gate Python only needs the reply set when checking pending
+ * decisions, and the sweep only needs the reply set when emitting new replies.
+ */
+export function loadEmittedReplyKeys(home: string): Set<string> {
+  const out = new Set<string>();
+  for (const item of readJsonlSafely(repliesPath(home))) {
+    const r = item as ReplyOnlyRecord;
+    if (r && r.type === "reply_only" && r.messageId && r.recipient) {
+      out.add(recordKey(r));
+    }
+  }
+  return out;
+}
+
 export function appendRecords(home: string, records: Record_[]): void {
   if (records.length === 0) return;
   mkdirSync(dirname(commitmentsPath(home)), { recursive: true });
@@ -342,6 +396,28 @@ export function appendRecords(home: string, records: Record_[]): void {
   if (cancels.length > 0) {
     appendFileSync(cancellationsPath(home), cancels.map((c) => JSON.stringify(c)).join("\n") + "\n");
   }
+}
+
+/**
+ * Append one reply_only record. Body must already be truncated to ≤240 chars
+ * (the caller does this so we don't surprise-test the limit). Safe to call
+ * with a record that's already been emitted — the caller should check
+ * loadEmittedReplyKeys() first; this function does NOT dedup.
+ */
+export function appendReplyRecord(home: string, record: ReplyOnlyRecord): void {
+  mkdirSync(dirname(repliesPath(home)), { recursive: true });
+  appendFileSync(repliesPath(home), JSON.stringify(record) + "\n");
+}
+
+/**
+ * Bulk version used by the sweep after the commit/cancel loop. Same shape as
+ * appendRecords — one line per record, trailing newline. Dedup is the
+ * caller's responsibility (sweep uses loadEmittedReplyKeys to skip seen keys).
+ */
+export function appendReplyRecords(home: string, records: ReplyOnlyRecord[]): void {
+  if (records.length === 0) return;
+  mkdirSync(dirname(repliesPath(home)), { recursive: true });
+  appendFileSync(repliesPath(home), records.map((r) => JSON.stringify(r)).join("\n") + "\n");
 }
 
 /**

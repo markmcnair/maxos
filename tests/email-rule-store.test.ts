@@ -231,6 +231,45 @@ describe("findMatchingRule", () => {
     const result = findMatchingRule([r], { from: "x@example.com", subject: "y" });
     assert.equal(result, null);
   });
+
+  // The 2026-08-05 dead-rule-database bug: every rule in the store was authored
+  // as a bare-address regex (`@domain\.com$`), but triage passes the raw From
+  // header, which is usually `Display Name <addr@domain.com>`. The `$` anchor
+  // never matched, so 66 rules sat at 0 triggers and nothing ever promoted.
+  it("matches an anchored sender regex against a 'Display Name <addr>' header", () => {
+    const r = rule({ pattern: { sender_regex: "@optionomega\\.com$" } });
+    const match = findMatchingRule([r], {
+      from: "Option Omega <support@optionomega.com>",
+      subject: "New Content",
+    });
+    assert.equal(match?.id, r.id);
+  });
+
+  it("still matches a rule written against the display name itself", () => {
+    const r = rule({ pattern: { sender_regex: "^Option Omega <" } });
+    const match = findMatchingRule([r], {
+      from: "Option Omega <support@optionomega.com>",
+      subject: "New Content",
+    });
+    assert.equal(match?.id, r.id);
+  });
+
+  it("does not match when the domain differs, even with a display name present", () => {
+    const r = rule({ pattern: { sender_regex: "@optionomega\\.com$" } });
+    const match = findMatchingRule([r], {
+      from: "Option Omega Impersonator <support@optionomega.com.evil.tld>",
+      subject: "New Content",
+    });
+    assert.equal(match, null);
+  });
+
+  it("handles a header with angle brackets but no display name", () => {
+    const r = rule({ pattern: { sender_regex: "^no-reply@slack\\.com$" } });
+    assert.equal(
+      findMatchingRule([r], { from: "<no-reply@slack.com>", subject: "y" })?.id,
+      r.id,
+    );
+  });
 });
 
 // ───── Lifecycle ─────

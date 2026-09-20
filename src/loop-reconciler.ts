@@ -9,8 +9,22 @@ const execFileAsync = promisify(execFile);
 export interface OpenLoop {
   id: string;
   topic: string;
-  /** Optional person name (for display). */
+  /**
+   * The COUNTERPARTY, for display and for the iMessage / email scans.
+   * ⛔ Never the assignee. See `owner`.
+   */
   person?: string;
+  /**
+   * WHO PERFORMS THE VERB. `"mark"` is the only value that may produce a
+   * Google Task (see google-tasks-are-marks-only.md). Absent means unknown,
+   * which fails CLOSED: the loop is tracked, no task is created.
+   *
+   * This exists because `person` was being read as an owner and was never
+   * that. {"topic":"Send Glenn the MNDA","person":"Glenn"} is Mark sending to
+   * Glenn, so its owner is Mark. A loop whose verb is Haley's has owner
+   * "Haley" (or nothing) and belongs in waiting_on, not in Mark's bucket.
+   */
+  owner?: string;
   /** Phone number for iMessage scan (E.164 preferred). */
   phone?: string;
   /** Email address for gws sent-message scan. */

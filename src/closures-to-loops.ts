@@ -118,10 +118,15 @@ function ymdLocal(d: Date): string {
  * reconciler's atomic saveOpenLoops.
  *
  * Wire format:
- *   - [HH:MM] [FACT] new-loop {"id":"...","topic":"...","person":"...","phone":"...","email":"...","notes":"..."}
+ *   - [HH:MM] [FACT] new-loop {"id":"...","topic":"...","person":"...","owner":"...","phone":"...","email":"...","notes":"..."}
  *
  * Required: id (non-empty string), topic (non-empty string)
- * Optional: person, phone, email, notes
+ * Optional: person, owner, phone, email, notes
+ *
+ * `person` is the counterparty. `owner` is who performs the verb, and only
+ * owner "mark" ever reaches Google Tasks — see ownsAction() in
+ * google-tasks-reconciler.ts. Omitting owner is safe by design: the loop is
+ * still tracked and still scanned, it just never lands on Mark's task list.
  *
  * Returns null on malformed input or missing required fields.
  */
@@ -129,6 +134,7 @@ export function parseNewLoopFact(line: string): {
   id: string;
   topic: string;
   person?: string;
+  owner?: string;
   phone?: string;
   email?: string;
   notes?: string;
@@ -150,6 +156,7 @@ export function parseNewLoopFact(line: string): {
   if (!id || !topic) return null;
   const out: ReturnType<typeof parseNewLoopFact> = { id, topic };
   if (typeof o.person === "string" && o.person.trim()) out!.person = o.person.trim();
+  if (typeof o.owner === "string" && o.owner.trim()) out!.owner = o.owner.trim();
   if (typeof o.phone === "string" && o.phone.trim()) out!.phone = o.phone.trim();
   if (typeof o.email === "string" && o.email.trim()) out!.email = o.email.trim();
   if (typeof o.notes === "string" && o.notes.trim()) out!.notes = o.notes.trim();
@@ -298,6 +305,7 @@ export function applyNewLoopFactsFromClosures(
         firstSeen: today,
         lastUpdated: today,
         ...(parsed.person ? { person: parsed.person } : {}),
+        ...(parsed.owner ? { owner: parsed.owner } : {}),
         ...(parsed.phone ? { phone: parsed.phone } : {}),
         ...(parsed.email ? { email: parsed.email } : {}),
         ...(parsed.notes ? { notes: parsed.notes } : {}),

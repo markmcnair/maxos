@@ -3,13 +3,16 @@ import { homedir } from "node:os";
 import { promisify } from "node:util";
 import {
   appendRecords,
+  appendReplyRecords,
   extractCancellations,
   extractCommitments,
   loadEmittedKeys,
+  loadEmittedReplyKeys,
   recordKey,
   type Channel,
   type MessageInput,
   type Record_,
+  type ReplyOnlyRecord,
 } from "./commitment-extractor.js";
 import { firstErrorLine, loadOutgoingDmsCache, localScanTimestamp } from "./outgoing-dms-cache.js";
 
@@ -234,6 +237,7 @@ export interface SweepResult {
   scanned: number;
   newCommitments: number;
   newCancellations: number;
+  newReplies: number;
   errors: string[];
 }
 
@@ -318,12 +322,43 @@ export async function sweepOutbound(
   }
   appendRecords(home, newRecords);
 
+  // SECOND PASS: every outbound (email + iMessage) gets a reply_only record,
+  // regardless of whether it matched commit/cancel patterns. This is what
+  // brief-gate.py consults to auto-resolve pending decisions when Mark has
+  // already replied off-record ("Oct works better for me" → Leslie gets
+  // resolved). Separate dedup set on purpose — see ReplyOnlyRecord invariant.
+  const emittedReplyKeys = loadEmittedReplyKeys(home);
+  const newReplyRecords: ReplyOnlyRecord[] = [];
+  for (const msg of messages) {
+    const reply: ReplyOnlyRecord = {
+      type: "reply_only",
+      ts: msg.sentAt,
+      messageId: msg.messageId,
+      sender: msg.sender,
+      recipient: msg.recipient,
+      channel: msg.channel,
+      body: clipReplySnippet(msg.body),
+    };
+    const key = recordKey(reply);
+    if (emittedReplyKeys.has(key)) continue;
+    emittedReplyKeys.add(key);
+    newReplyRecords.push(reply);
+  }
+  appendReplyRecords(home, newReplyRecords);
+
   return {
     scanned: messages.length,
     newCommitments: newRecords.filter((r) => r.type === "commitment").length,
     newCancellations: newRecords.filter((r) => r.type === "cancellation").length,
+    newReplies: newReplyRecords.length,
     errors,
   };
+}
+
+/** Truncate body to ≤240 chars, single line, for the outbound-replies store. */
+function clipReplySnippet(body: string, maxLen = 240): string {
+  const t = body.replace(/\s+/g, " ").trim();
+  return t.length > maxLen ? t.slice(0, maxLen - 1) + "…" : t;
 }
 
 // ───── CLI ─────
@@ -332,9 +367,10 @@ const isCLI = process.argv[1]?.endsWith("commitment-sweep.js");
 if (isCLI) {
   const home = process.env.MAXOS_HOME ?? `${homedir()}/.hermes`;
   sweepOutbound(home, { hoursBack: 6 }).then((r) => {
-    if (r.newCommitments + r.newCancellations > 0 || process.env.MAXOS_COMMIT_VERBOSE) {
+    const any = r.newCommitments + r.newCancellations + r.newReplies;
+    if (any > 0 || process.env.MAXOS_COMMIT_VERBOSE) {
       console.log(
-        `commitment-sweep: scanned=${r.scanned} commits=${r.newCommitments} cancels=${r.newCancellations} errors=${r.errors.length}`,
+        `commitment-sweep: scanned=${r.scanned} commits=${r.newCommitments} cancels=${r.newCancellations} replies=${r.newReplies} errors=${r.errors.length}`,
       );
       for (const e of r.errors) console.log(`  ! ${e}`);
     }

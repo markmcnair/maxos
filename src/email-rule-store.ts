@@ -27,6 +27,8 @@ export interface Rule {
   created_at: string;         // ISO 8601 or YYYY-MM-DD
   created_from: string;       // e.g. "training-2026-05-05" or "manual"
   notes?: string;
+  approved_by?: string;       // set when a human promoted it (see runApprove)
+  approved_at?: string;       // ISO 8601
 }
 
 export interface RuleStore {
@@ -145,9 +147,29 @@ function tryRegex(pattern: string | undefined, haystack: string): boolean {
   }
 }
 
+/**
+ * The candidate strings a sender_regex is tested against: the raw From
+ * header AND, when the header is `Display Name <addr@host>`, the bare
+ * address inside the brackets.
+ *
+ * Why both (2026-08-05): rules are authored as domain-anchored regexes
+ * (`@optionomega\.com$`) but triage passes the raw header, which almost
+ * always carries a display name. The `$` anchor could never match, so all
+ * 66 rules in the store sat at 0 triggers, nothing ever promoted, and every
+ * email fell through to an LLM call. Keeping the raw header as a candidate
+ * preserves rules written against the display name itself.
+ */
+export function senderCandidates(from: string): string[] {
+  const m = from.match(/<([^>]*)>\s*$/);
+  const bare = m?.[1].trim();
+  return bare && bare !== from ? [from, bare] : [from];
+}
+
 function matchesEmail(rule: Rule, email: EmailFeatures): boolean {
   if (rule.status === "retired") return false;
-  const senderOk = tryRegex(rule.pattern.sender_regex, email.from);
+  const senderOk = senderCandidates(email.from).some((candidate) =>
+    tryRegex(rule.pattern.sender_regex, candidate),
+  );
   const subjectOk = tryRegex(rule.pattern.subject_regex, email.subject);
   // Both regexes must pass; absent regex = pass
   return senderOk && subjectOk;

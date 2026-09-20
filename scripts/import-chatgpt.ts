@@ -76,7 +76,7 @@ async function main() {
   }
   console.log(`Found ${raw.length} conversations in the export.`);
 
-  const maxosHome = process.env.MAXOS_HOME ?? join(homedir(), ".maxos");
+  const maxosHome = process.env.MAXOS_HOME ?? join(homedir(), ".hermes");
   const outDir = join(maxosHome, "vault", "chatgpt-history");
   mkdirSync(outDir, { recursive: true });
 

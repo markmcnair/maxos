@@ -28,7 +28,7 @@ import { fileURLToPath } from "node:url";
 import Handlebars from "handlebars";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".maxos");
+const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".hermes");
 const TEMPLATES_DIR = join(__dirname, "..", "templates");
 
 async function loadTemplate(name: string): Promise<HandlebarsTemplateDelegate> {
@@ -125,7 +125,7 @@ async function main() {
     const tmpl = await loadTemplate(file.template);
     const content = tmpl(ctx);
     writeFileSync(file.output, content);
-    console.log(`Created ${file.output.replace(MAXOS_HOME, "~/.maxos")}`);
+    console.log(`Created ${file.output.replace(MAXOS_HOME, "~/.hermes")}`);
   }
 
   // Render rules templates into workspace/.claude/rules/
@@ -154,7 +154,7 @@ async function main() {
   // Telegram env file
   if (ctx.telegramToken) {
     writeFileSync(join(MAXOS_HOME, ".env"), `TELEGRAM_BOT_TOKEN=${ctx.telegramToken}\n`);
-    console.log("Created ~/.maxos/.env");
+    console.log("Created ~/.hermes/.env");
   }
 
   // MEMORY.md

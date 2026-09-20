@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { execSync } from "node:child_process";
 
-const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".maxos");
+const MAXOS_HOME = process.env.MAXOS_HOME || join(homedir(), ".hermes");
 
 async function verifyTelegramToken(token: string): Promise<{ ok: boolean; botName?: string }> {
   try {
@@ -147,17 +147,17 @@ export async function runOnboard(): Promise<void> {
 
   // Summary and next steps
   console.log("\n" + "\u2501".repeat(60));
-  console.log("\n\u2705 Workspace generated at ~/.maxos/workspace\n");
+  console.log("\n\u2705 Workspace generated at ~/.hermes/workspace\n");
   console.log("Next: connect your tools and set up automations.\n");
 
   if (existsSync(join(homedir(), ".claude"))) {
-    console.log("  cd ~/.maxos/workspace && claude\n");
+    console.log("  cd ~/.hermes/workspace && claude\n");
     console.log("Then tell your agent: \"set up my tools\"\n");
     console.log("It will discover what's on your machine, verify connections,");
     console.log("port existing automations, and get everything wired up.\n");
   } else {
     console.log("Install Claude Code first: https://docs.anthropic.com/en/docs/claude-code");
-    console.log("Then: cd ~/.maxos/workspace && claude\n");
+    console.log("Then: cd ~/.hermes/workspace && claude\n");
   }
 
   if (connectTelegram && telegramToken) {

@@ -8,8 +8,11 @@ import {
   runProposeRule,
   runLifecycle,
   runList,
+  runApprove,
+  runPending,
+  formatPending,
 } from "../src/email-triage-rules-cli.js";
-import { saveRules, type Rule, type RuleStore } from "../src/email-rule-store.js";
+import { loadRules, saveRules, type Rule, type RuleStore } from "../src/email-rule-store.js";
 
 describe("runRecordHit", () => {
   let home: string;
@@ -236,5 +239,154 @@ describe("runList", () => {
     assert.equal(r.totals.retired, 0);
     assert.equal(r.totals.byBucket.delete, 1);
     assert.equal(r.totals.byBucket["see-mail"], 1);
+  });
+});
+
+// ───── approve / pending (the human lever, added 2026-08-05) ─────
+
+function proposed(id: string, overrides: Partial<Rule> = {}): Rule {
+  return {
+    id,
+    kind: "sender_pattern",
+    pattern: { sender_regex: `@${id}\\.com$` },
+    action: "delete",
+    confidence: 0.5,
+    status: "proposed",
+    stats: { triggers: 0, kept_count: 0, corrected_count: 0 },
+    created_at: "2026-05-04",
+    created_from: "training-2026-05-04",
+    ...overrides,
+  };
+}
+
+describe("runApprove", () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "rules-cli-"));
+  });
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("promotes named proposed rules to active and persists", () => {
+    saveRules(home, { version: 1, rules: [proposed("a"), proposed("b")] });
+    const r = runApprove(home, { ruleIds: ["a"] }, new Date("2026-08-05T20:00:00Z"));
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.approved, ["a"]);
+    const store = loadRules(home);
+    assert.equal(store.rules.find((x) => x.id === "a")?.status, "active");
+    assert.equal(store.rules.find((x) => x.id === "b")?.status, "proposed");
+  });
+
+  // An approved rule that keeps confidence 0.5 is a no-op: decideBucketFromRules
+  // sends anything under 0.7 to llm-fallback, so the rule would still never fire.
+  it("raises an approved rule to high confidence so it actually decides", () => {
+    saveRules(home, { version: 1, rules: [proposed("a")] });
+    runApprove(home, { ruleIds: ["a"] }, new Date("2026-08-05T20:00:00Z"));
+    const rule = loadRules(home).rules[0];
+    assert.ok(rule.confidence >= 0.9, `expected >= 0.9, got ${rule.confidence}`);
+  });
+
+  it("never lowers the confidence of a rule that already earned more", () => {
+    saveRules(home, { version: 1, rules: [proposed("a", { confidence: 0.97 })] });
+    runApprove(home, { ruleIds: ["a"] }, new Date("2026-08-05T20:00:00Z"));
+    assert.equal(loadRules(home).rules[0].confidence, 0.97);
+  });
+
+  it("stamps who approved it and when, so the audit trail survives", () => {
+    saveRules(home, { version: 1, rules: [proposed("a")] });
+    runApprove(home, { ruleIds: ["a"] }, new Date("2026-08-05T20:00:00Z"));
+    const rule = loadRules(home).rules[0];
+    assert.equal(rule.approved_by, "mark");
+    assert.equal(rule.approved_at, "2026-08-05T20:00:00.000Z");
+  });
+
+  it("approves every proposed rule in one bucket with --bucket", () => {
+    saveRules(home, {
+      version: 1,
+      rules: [proposed("a"), proposed("b", { action: "see-mail" }), proposed("c")],
+    });
+    const r = runApprove(home, { bucket: "delete" }, new Date());
+    assert.deepEqual(r.approved.sort(), ["a", "c"]);
+    assert.equal(loadRules(home).rules.find((x) => x.id === "b")?.status, "proposed");
+  });
+
+  it("approves everything proposed with --all", () => {
+    saveRules(home, {
+      version: 1,
+      rules: [proposed("a"), proposed("b", { action: "see-mail" })],
+    });
+    const r = runApprove(home, { all: true }, new Date());
+    assert.equal(r.approved.length, 2);
+  });
+
+  it("dry-run reports what would change and writes nothing", () => {
+    saveRules(home, { version: 1, rules: [proposed("a")] });
+    const r = runApprove(home, { all: true, dryRun: true }, new Date());
+    assert.equal(r.dryRun, true);
+    assert.deepEqual(r.approved, ["a"]);
+    assert.equal(loadRules(home).rules[0].status, "proposed", "dry run must not persist");
+  });
+
+  it("skips unknown ids and rules that are not proposed, without failing the batch", () => {
+    saveRules(home, {
+      version: 1,
+      rules: [proposed("a"), proposed("b", { status: "active" }), proposed("c", { status: "retired" })],
+    });
+    const r = runApprove(home, { ruleIds: ["a", "b", "c", "ghost"] }, new Date());
+    assert.deepEqual(r.approved, ["a"]);
+    assert.equal(r.skipped.length, 3);
+    assert.match(r.skipped.find((s) => s.id === "ghost")?.reason ?? "", /not found/i);
+    assert.match(r.skipped.find((s) => s.id === "b")?.reason ?? "", /active/i);
+    assert.match(r.skipped.find((s) => s.id === "c")?.reason ?? "", /retired/i);
+  });
+
+  it("requires a selector — no silent mass approval", () => {
+    saveRules(home, { version: 1, rules: [proposed("a")] });
+    const r = runApprove(home, {}, new Date());
+    assert.equal(r.ok, false);
+    assert.match(r.error ?? "", /--rule|--bucket|--all/);
+    assert.equal(loadRules(home).rules[0].status, "proposed");
+  });
+});
+
+describe("runPending", () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "rules-cli-"));
+  });
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("returns only proposed rules, grouped by bucket, newest first", () => {
+    saveRules(home, {
+      version: 1,
+      rules: [
+        proposed("a", { created_at: "2026-05-01" }),
+        proposed("b", { action: "see-mail", created_at: "2026-06-01" }),
+        proposed("c", { created_at: "2026-07-01" }),
+        proposed("d", { status: "active" }),
+      ],
+    });
+    const r = runPending(home);
+    assert.equal(r.total, 3);
+    assert.deepEqual(r.byBucket.delete.map((x) => x.id), ["c", "a"]);
+    assert.deepEqual(r.byBucket["see-mail"].map((x) => x.id), ["b"]);
+  });
+
+  it("formats a plain-text review list with the approve command spelled out", () => {
+    saveRules(home, { version: 1, rules: [proposed("a")] });
+    const text = formatPending(runPending(home));
+    assert.match(text, /delete/);
+    assert.match(text, /@a\\\.com\$/);
+    assert.match(text, /approve --rule a/);
+  });
+
+  it("says so plainly when nothing is pending", () => {
+    saveRules(home, { version: 1, rules: [] });
+    assert.match(formatPending(runPending(home)), /nothing pending/i);
   });
 });

@@ -24,11 +24,15 @@ import type { ListTasksResult } from "../src/google-tasks.js";
 
 let home: string;
 
+// owner "mark" — this file tests creates ACCOUNTING, so its loops have to be
+// ones that legitimately produce a task. The ownership gate itself is covered
+// in google-tasks-reconciler.test.ts.
 const loop = (id: string, topic: string) => ({
   id,
   topic,
   firstSeen: "2026-08-01",
   lastUpdated: "2026-08-08",
+  owner: "mark",
 });
 
 function seed(loops: ReturnType<typeof loop>[], state: Record<string, string> = {}) {

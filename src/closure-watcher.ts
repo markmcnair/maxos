@@ -104,7 +104,7 @@ export function formatClosureLine(match: ClosureMatch): string {
   const hhmm = match.message.timestamp.slice(11, 16);  // "13:03" from "2026-04-21 13:03:22"
   const raw = match.message.text.replace(/\s+/g, " ").trim();
   const truncated = raw.length > 100 ? raw.slice(0, 99) + "…" : raw;
-  return `- [${hhmm}] [CLOSURE] texted ${match.dossier.name} — ${truncated}`;
+  return `- [${hhmm}] [CLOSURE] → ${match.dossier.name}: ${truncated}`;
 }
 
 /** Filter out lines that already exist (trimmed) in the existing log content. */
