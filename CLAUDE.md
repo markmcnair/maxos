@@ -3,18 +3,36 @@
 **STOP. Before doing ANYTHING else — run this check:**
 
 ```bash
-cd ~/Projects/maxos && test -d ~/.maxos/workspace && echo "EXISTS" || echo "FRESH"
+test -d ~/.maxos/workspace && echo "MAXOS_LIVE"; test -d ~/.hermes && echo "HERMES_LIVE"
 ```
 
-## If FRESH (no workspace)
+There are **three** states, not two. A missing `~/.maxos/workspace` is ambiguous
+on its own — it can mean never-installed OR decommissioned. `~/.hermes` is what
+tells them apart.
+
+## If HERMES_LIVE without MAXOS_LIVE → RETIRED (this is the current state)
+
+MaxOS is decommissioned on this machine. Max runs on **Hermes** in `~/.hermes`.
+The launchd jobs `ai.maxos.cron` and `ai.maxos.telegram` are Hermes jobs that
+kept the legacy name — they are live, and they are not MaxOS.
+
+**Do NOT run the onboard skill. Do NOT run `npx maxos init` or
+`node dist/src/index.js start`.** The `start` pre-flight kills pollers and
+unloads launchd agents, which takes the live Hermes scheduler and Telegram bot
+down and then contends for the same bot token — a silent outage.
+
+Treat this repo as **source code only**: edit `src/`, build, and let the user
+restart Hermes. Otherwise just help with what was asked.
+
+## If MAXOS_LIVE → workspace present
+
+Help with whatever the user needs. Read `~/Projects/maxos/docs/design-spec.md` for architecture.
+
+## If neither → genuinely FRESH
 
 **Do NOT explore the repo. Do NOT check git status. Do NOT run tests. Do NOT read README.md or package.json.**
 
 Read `~/Projects/maxos/.claude/skills/onboard.md` and follow every instruction in it. That file IS the setup. Go directly to it. Nothing else matters until onboarding is complete.
-
-## If EXISTS (workspace present)
-
-Help with whatever the user needs. Read `~/Projects/maxos/docs/design-spec.md` for architecture.
 
 ## Two directories — know the split
 
@@ -35,10 +53,15 @@ Consequences:
 
 ## Trigger Words
 
-Any of these mean treat as FRESH regardless of workspace state:
+Any of these mean treat as FRESH — **but only if the state check above says
+genuinely FRESH**:
 - "set me up", "set up", "get started", "onboard", "onboard me"
 - "clone and set me up", "fresh install", "nuke and reinstall"
 - Pasting a GitHub URL
+
+**A trigger word never overrides the state check.** If the check says RETIRED,
+a trigger word is not permission to reinstall over a live Hermes — ask the user
+whether they mean "fix this repo" or "actually replace Hermes", and wait.
 
 ## Hard Rules
 - NEVER tell the user to open a terminal, run a command, or change directories. You handle everything.

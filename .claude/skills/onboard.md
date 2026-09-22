@@ -2,6 +2,37 @@
 
 Connect tools, discover automations, and wire up a MaxOS workspace. This is the intelligent half of onboarding — `npx maxos init` handles identity and workspace generation; this skill handles everything that benefits from judgment.
 
+## ⛔ STOP — Step 0: is anything already live on this machine?
+
+Run this BEFORE the greeting, before Pre-Flight, before anything:
+
+```bash
+test -d ~/.maxos/workspace && echo "MAXOS_LIVE"; test -d ~/.hermes && echo "HERMES_LIVE"; ls ~/Library/LaunchAgents/ 2>/dev/null | grep -E "maxos|hermes"
+```
+
+**If you see `HERMES_LIVE` without `MAXOS_LIVE`: STOP. Do not continue this skill.**
+
+That combination means MaxOS was decommissioned and replaced by Hermes — a
+different agent living in `~/.hermes`. A missing `~/.maxos/workspace` means
+retired, not never-installed. The launchd jobs named `ai.maxos.cron` and
+`ai.maxos.telegram` belong to Hermes; they kept the legacy name.
+
+Running the rest of this skill would cause a real outage. Step 3 runs
+`node dist/src/index.js start`, whose pre-flight deliberately kills pollers and
+unloads launchd agents — the live Hermes scheduler and Telegram bot — and then
+stands up a competing daemon against the same bot token. Scheduled jobs stop
+firing and messages get dropped or duplicated, silently.
+
+Instead, say this and wait:
+
+> "MaxOS is retired on this machine — Max runs on Hermes now. Setting it up
+> again would knock your scheduled jobs and Telegram offline. Do you want me to
+> treat this repo as source code and just fix what you asked, or do you
+> genuinely want to replace Hermes with MaxOS?"
+
+Only continue if they explicitly choose to replace Hermes. Never infer that
+from a trigger word like "set me up" or a pasted GitHub URL.
+
 **IMPORTANT:** Go directly to Pre-Flight. Do NOT read README.md, package.json, or other repo files first — this skill has everything you need.
 
 ## Pre-Flight

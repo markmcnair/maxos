@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c 'if [ -d ~/.maxos/workspace ]; then echo \"WORKSPACE_EXISTS — help with whatever the user needs. Read docs/design-spec.md for architecture.\"; else echo \"NO_WORKSPACE — FRESH INSTALL. You MUST read .claude/skills/onboard.md and follow every step. Do NOT explore the repo, check git, run tests, or read README. Go directly to the onboard skill NOW.\"; fi'"
+            "command": "bash -c 'if [ -d ~/.maxos/workspace ]; then echo \"WORKSPACE_EXISTS \u2014 help with whatever the user needs. Read docs/design-spec.md for architecture.\"; elif [ -d ~/.hermes ]; then echo \"DECOMMISSIONED \u2014 MaxOS is RETIRED on this machine. The live agent is Hermes in ~/.hermes; the launchd jobs ai.maxos.cron and ai.maxos.telegram are Hermes jobs that kept the legacy name. The absent ~/.maxos/workspace means decommissioned, NOT never-installed. Do NOT run .claude/skills/onboard.md. Do NOT run \\\"node dist/src/index.js start\\\" or npx maxos init \u2014 the start pre-flight kills pollers and unloads launchd agents, which would take down the live Hermes scheduler and Telegram bot and then contend for the same bot token. Treat this repo as SOURCE CODE ONLY: edit src/, build, and let the user restart Hermes. If the user explicitly asks to reinstall MaxOS, say what Hermes would lose and get confirmation before touching anything.\"; else echo \"NO_WORKSPACE and no ~/.hermes \u2014 genuinely fresh. Read .claude/skills/onboard.md and follow every step. Do NOT explore the repo, check git, run tests, or read README.\"; fi'"
           }
         ]
       }
